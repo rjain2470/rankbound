@@ -28,7 +28,7 @@ had fields which could not be sieved by CADO-NFS.
 
 For each curve with a rank upper bound under GRH, we store a JSON file containing its relations and the
 steps of Gaussian elimination that prove its bound, which we call a *certificate*. The certificates for all 1,960 of
-these curves are on Zenodo: https://doi.org/10.5281/zenodo.23479586. To check them, run the following code in the folder of
+these curves are on Zenodo: https://doi.org/10.5281/zenodo.23479585. To check them, run the following code in the folder of
 the downloaded record with this repository at `RANKBOUND`:
 
 ```
