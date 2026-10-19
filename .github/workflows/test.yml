@@ -1,0 +1,11 @@
+name: test
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: debian:trixie        # PARI/GP 2.17 (Ubuntu's is older)
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y --no-install-recommends pari-gp python3 make gcc libc6-dev
+      - run: gp --version-short </dev/null
+      - run: make test

@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+build/
+logs/
+rankbound_work/
+rankbound/f2elim
+rankbound/cado/
+rankbound/verify/f2rank
+certificates/
+.DS_Store
