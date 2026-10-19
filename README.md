@@ -37,6 +37,15 @@ awk -F'\t' 'NR > 1 && $3 {print $7 "  certificates/" $3}' RANKBOUND/certificates
 rankbound verify --cores 4 certificates/
 ```
 
+To download the certificate for curve #N alone (macOS/Linux):
+```
+N=752
+R=https://zenodo.org/records/23479586/files
+set -- $(curl -sL "$R/certificate_index.tsv?download=1" | awk -F'\t' -v n="icarm$N" '$1==n {print $2, $6, $6+$7-1}')
+if [ $# = 3 ]; then curl -sL -r "$2-$3" "$R/certificates_$1.tar?download=1" | gunzip > icarm$N.cert.json; else echo "No certificate for #$N"; fi
+```
+To check it, install rankbound (`make build && pip install .` in the repository), then run `rankbound verify icarm$N.cert.json`.
+
 ## How it works
 
 Let $E$ be an elliptic curve over ℚ without 2-torsion with $F_E$ as above. By the Brumer–Kramer bound,
