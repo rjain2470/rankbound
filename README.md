@@ -44,7 +44,7 @@ R=https://zenodo.org/records/23479586/files
 set -- $(curl -sL "$R/certificate_index.tsv?download=1" | awk -F'\t' -v n="icarm$N" '$1==n {print $2, $6, $6+$7-1}')
 if [ $# = 3 ]; then curl -sL -r "$2-$3" "$R/certificates_$1.tar?download=1" | gunzip > icarm$N.cert.json; else echo "No certificate for #$N"; fi
 ```
-To check it, install rankbound (`make build && pip install .` in the repository), then run `rankbound verify icarm$N.cert.json`.
+To check it, install rankbound by running `make build && pip install .` in the repository, then run `rankbound verify icarm$N.cert.json`.
 
 ## How it works
 
@@ -188,18 +188,11 @@ folder (default `./rankbound_work`); and `<certificate>` is a `.cert.json` file 
 --compute           compute even if the curve is already certified
 ```
 
-`rankbound <command> --help` lists every option. A curve list is
-`{"curves": [{"id": 1, "ainvs": [...], "bad_primes": [...]}, ...]}`, where `bad_primes` lists the primes of the
-discriminant; factors not yet split can be listed as `composites`. Both are optional: a curve without them is factored
-as below, with `--ecm-hours` for each curve; a curve whose factoring stops is skipped, and running the same command
-again continues it. The exit status is 0 on success, 1 on a refused or skipped curve or a failed check, and 2 on a
-usage error.
-
-Without `--bad-primes`, `rankbound` factors the discriminant itself: trial division, then ECM on what is left, with
-GMP-ECM on `--cores` processes (the `ecm` program on the PATH, or the one `RANKBOUND_ECM` names), or with PARI's
-`factor()` if GMP-ECM is not installed. After `--ecm-hours` it stops and names each composite left, with the effort
-spent on it; running the same command again continues where it stopped. A composite with no factor up to about 60
-digits needs the number field sieve (e.g. CADO-NFS); give its primes with `--bad-primes`.
+`rankbound <command> --help` lists every option. One can also input a list of curves of the form
+`{"curves": [{"id": 1, "ainvs": [...], "bad_primes": [...]}, ...]}`, where `bad_primes` optionally lists the primes
+dividing the discriminant. If `bad_primes` are not provided, `rankbound` automatically factors the discriminant using
+trial division and ECM. If the discriminant is too large to be factored in `--ecm-hours` (set to 1 hour by default),
+the curve is skipped.
 
 From Python:
 
