@@ -97,8 +97,9 @@ class Job:
                         minimal_model=curve.minimal_model)
         if new:
             self._cost(field=round(time.time() - t, 1))
-            LOG('Conductor: %d digits, %d bad primes; root number %+d.' % (len(fld.conductor(F)), len(F['bad_primes']),
-                                                                         F['w']))
+            k = len(F['bad_primes'])
+            LOG('Conductor: %d digits, %d bad prime%s; root number %+d.' % (len(fld.conductor(F)), k, 's' * (k != 1),
+                                                                          F['w']))
         self.check_proof(curve)             # before curve.json is written
         write_json(self._path('curve.json'), curve.to_dict())
         LOG(aim_text(F))
