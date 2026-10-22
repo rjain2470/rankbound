@@ -327,8 +327,7 @@ class TestEndToEnd(unittest.TestCase):
         r = subprocess.run(CLI + ['estimate', '--dir', os.path.join(self.tmp, 'batch'), '--curves', path], cwd=self.tmp,
                            env=ENV, capture_output=True, text=True, timeout=600)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('Skipped curve2. The discriminant is not fully factored. Give all its prime factors in "bad_primes".',
-                      r.stdout)
+        self.assertIn('Skipped curve2. The composite 3997 does not divide the discriminant.', r.stdout)
         self.assertRegex(r.stdout, r'1 curves; estimated cost [0-9.]+ core-hours in all\. Skipped: curve2\.')
         self.assertTrue(os.path.exists(os.path.join(self.tmp, 'batch', 'curve1', 'params.json')))
 

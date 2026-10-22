@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rankbound"
-version = "1.0.0"
+version = "1.1.0"
 description = "Upper bounds on the rank of elliptic curves over Q under GRH for the unramified quadratic extensions of a cubic field (no BSD), with independently checkable certificates"
 readme = "README.md"
 license = {text = "GPL-2.0-or-later"}

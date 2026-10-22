@@ -67,7 +67,8 @@ def curves(a):
                 raise SystemExit('--ids %r contains an empty id.' % a.ids)
             cs = field.from_list(a.curves, ids)
         else:
-            cs = [field.from_ainvs(curve.split(','), a.bad_primes.split(',') if a.bad_primes else None, a.r, a.name)]
+            cs = [field.from_ainvs(curve.split(','), a.bad_primes.split(',') if a.bad_primes else None, a.r, a.name,
+                                   factor_seconds=0 if a.ecm_hours else 600, composites=bool(a.ecm_hours))]
         if a.points:
             if len(cs) != 1:
                 raise SystemExit('--points works with a single curve only.')
@@ -100,7 +101,7 @@ def cmd_bound(a):
     try:
         rels = linalg.relation_input(a.relations)
         return report(Job(folder(a, cs[0], rels)).run(cs[0], cores=a.cores, mem_gb=a.mem, until=a.until,
-                                                      relations=rels, sieve=a.keep_sieving))
+                                                      relations=rels, sieve=a.keep_sieving, ecm_hours=a.ecm_hours))
     except Stopped:
         log(STOPPED)
 
@@ -140,8 +141,11 @@ def cmd_estimate(a, run=False):
         if os.path.exists(os.path.join(J.dir, 'result.json')):
             plan.append((0, J, c)); continue
         try:
-            J.prepare(c)
+            J.prepare(c, ecm_hours=a.ecm_hours, cores=a.cores, mem_gb=a.mem, until=getattr(a, 'until', None))
             plan.append((J.tune(a.mem, a.cores)['model']['core_hours'], J, c))
+        except Stopped:                     # the time limit, while factoring
+            log(STOPPED)
+            return int(bool(failed))
         except (RankboundError, RuntimeError, ValueError) as e:
             if len(cs) == 1:
                 raise
@@ -156,7 +160,7 @@ def cmd_estimate(a, run=False):
         return rc
     for _, J, c in plan:
         try:
-            rc |= report(J.run(c, cores=a.cores, mem_gb=a.mem, until=a.until))
+            rc |= report(J.run(c, cores=a.cores, mem_gb=a.mem, until=a.until, ecm_hours=a.ecm_hours))
         except Stopped:
             log(STOPPED)
         except (RankboundError, RuntimeError, ValueError) as e:
@@ -216,6 +220,8 @@ def curve_options(s, run):
     s.add_argument('--cores', type=positive(int), default=1, metavar='N', help='cores to use')
     s.add_argument('--mem', type=positive(float), default=1.0, metavar='GB', help='GB of memory per core')
     s.add_argument('--points', metavar='FILE', help='independent points, one "x y" per line')
+    s.add_argument('--ecm-hours', type=positive(float, zero=True), default=1.0, metavar='H',
+                   help='factor the discriminant by ECM for at most H hours (default 1; 0: PARI only, 10 min)')
     if run:
         s.add_argument('--max-hours', type=positive(float, zero=True), metavar='H', help='stop after H hours')
         s.add_argument('--relations', metavar='FILE', help='start from these relations')

@@ -166,15 +166,20 @@ def checked(c):
     return c
 
 
-# The minimal model, whether E(Q)[2] = 0, and the bad primes: trial division to 10^6, then factor() for at most 10
-# minutes per cofactor.
+# The minimal model, whether E(Q)[2] = 0, and the bad primes: trial division to 10^6, cheap splits of what is left
+# (perfect powers, the gcd with c4, which the primes of additive reduction divide), then factor() for at most S seconds
+# per cofactor (none with S = 0: the composites go to the ECM step).
 CURVE_GP = '''{ my(E = ellminimalmodel(ellinit([%s])), T = x^3 + E.b2*x^2 + 8*E.b4*x + 16*E.b6, P = List(), C = List(), G,
-     J = (v -> strjoin(apply(z -> Str(z), Vec(v)), ",")));
-  if(%d, my(F = factor(abs(E.disc), 10^6));
-    for(i = 1, #F~, my(p = F[i, 1]);
-      if(p < 10^6 || ispseudoprime(p), listput(P, p); next);
-      G = iferr(alarm(600, factor(p)), e, 0);
-      if(type(G) != "t_MAT", listput(C, p); next);
+     J = (v -> strjoin(apply(z -> Str(z), Vec(v)), ",")), S = %d);
+  if(%d, my(F = factor(abs(E.disc), 10^6), todo = List());
+    for(i = 1, #F~, my(p = F[i, 1]); if(p < 10^6 || ispseudoprime(p), listput(P, p), listput(todo, p)));
+    while(#todo, my(q = todo[#todo], k, g); listpop(todo);
+      if(q == 1, next);
+      if(ispseudoprime(q), listput(P, q); next);
+      k = ispower(q, , &g); if(k, listput(todo, g); next);
+      g = gcd(q, E.c4); if(g > 1 && g < q, listput(todo, g); listput(todo, q / g); next);
+      G = if(S, iferr(alarm(S, factor(q)), e, 0), 0);
+      if(type(G) != "t_MAT", listput(C, q); next);
       for(j = 1, #G~, if(ispseudoprime(G[j, 1]), listput(P, G[j, 1]), listput(C, G[j, 1])))));
   print("E2\\t", polisirreducible(T), "\\t", J(E[1..5]), "\\t", J(Set(Vec(P))), "\\t", J(Set(Vec(C)))); }'''
 
@@ -229,34 +234,38 @@ NOT_APPLICABLE = ('This curve has a rational point of order 2, so the method doe
                   'e.g. mwrank).')
 
 
-def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp'):
-    """Return the Curve of ainvs, on any model.  Without bad_primes the discriminant is factored; raises
-    FactorisationNeeded if a composite is left, NotApplicable if E(Q)[2] != 0."""
+def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp', factor_seconds=600, composites=False):
+    """Return the Curve of ainvs, on any model.  Without bad_primes the discriminant is factored, by PARI for at most
+    factor_seconds per cofactor; a composite left raises FactorisationNeeded or, with composites, is returned in
+    Curve.composites, for Job.prepare's ECM step.  Raises NotApplicable if E(Q)[2] != 0."""
     a = _ainvs5(ainvs)
     r = r_value(r)
     if name is not None:
         check_name(name)
-    body = CURVE_GP % (','.join(map(str, a)), bad_primes is None)
+    body = CURVE_GP % (','.join(map(str, a)), int(factor_seconds), bad_primes is None)
     if bad_primes is not None:
         bad_primes = _bad_primes(bad_primes)
         body = 'addprimes([%s]);\n' % ','.join(bad_primes) + body
-    out = run_gp(body, seconds=7200, gp=gp)
+    out = run_gp(body, seconds=7200 + int(factor_seconds) * 100, gp=gp)
     t = next(l.split('\t') for l in out.splitlines() if l.startswith('E2'))
     if t[1].strip() != '1':
         raise NotApplicable(NOT_APPLICABLE)
+    left = []
     if bad_primes is None:
-        if t[4].strip():
+        left = [x for x in t[4].strip().split(',') if x]
+        if left and not composites:
             raise FactorisationNeeded('PARI could not factor the discriminant. Give its prime factors with '
-                                      '--bad-primes P1,P2,...')
-        bad_primes = t[3].strip().split(',')
+                                      '--bad-primes P1,P2,...', [{'n': c, 'digits': len(c)} for c in left])
+        bad_primes = [x for x in t[3].strip().split(',') if x]
     mm = t[2].strip().split(',')
     return Curve(name=default_name(mm) if name is None else name, ainvs=[str(x) for x in a], bad_primes=[str(p) for p in bad_primes], r=r,
-                 minimal_model=mm)
+                 minimal_model=mm, composites=left)
 
 
 def from_list(path, ids=None):
     """Return the curves of a JSON curve list (optionally gzipped) whose id is in ids (None: all).  Each needs id (or
-    icarm_id), ainvs and bad_primes; a ValueError names the curve."""
+    icarm_id), ainvs and bad_primes (and composites, if bad_primes are not all the primes); a ValueError names the
+    curve."""
     try:
         with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as f:
             d = json.load(f)
@@ -366,7 +375,16 @@ def compute(ainvs, bad_primes, gp='gp', seconds=7200):
         'w': int(sf['w']),
         'sign_disc': int(sf['signD']),
     }
+    F['conductor'] = conductor(F)
     return F, small
+
+
+def conductor(F):
+    """Return the conductor prod p^f_p, from the field data's Brumer-Kramer primes (f_p: their 'reduction')."""
+    N = 1
+    for b in F['bk_primes']:
+        N *= int(b['p']) ** int(b['reduction'])
+    return str(N)
 
 
 def target(F, r):

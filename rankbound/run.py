@@ -1,7 +1,8 @@
 """The staged Job over a state folder: prepare, tune, sieve and check until the goal or a plateau, then certify and
 verify.  Every stage is checkpointed in the folder, so calling run() again resumes."""
-import logging, math, os, time
-from . import FactorisationNeeded, RankboundError, Stopped, field as fld, gp_message, linalg, read_json, sieve, write_json
+import dataclasses, logging, math, os, time
+from . import FactorisationNeeded, RankboundError, Stopped, factor, field as fld, gp_message, linalg, read_json, sieve
+from . import write_json
 from . import verify as verifier
 from .field import Curve
 from .rules import earlier
@@ -72,23 +73,47 @@ class Job:
         if [str(x) for x in new] != [str(x) for x in old]:
             raise RankboundError('%s %s' % (self.dir, WORKED_ON))
 
-    def prepare(self, curve):
-        """Write the field data and curve.json, after checking the proof of r, if any."""
+    def prepare(self, curve, ecm_hours=1.0, cores=1, mem_gb=1.0, until=None):
+        """Write the field data and curve.json, after checking the proof of r, if any.  Composites left in the
+        discriminant are factored first (factor.split: for at most ecm_hours on cores processes, stopping at until)."""
         fld.checked(curve)                  # also a Curve made by hand
-        if curve.composites:
-            raise FactorisationNeeded('The discriminant is not fully factored. Give all its prime factors in '
-                                      '"bad_primes".')
         self.check_curve(curve)
-        t = time.time()
         new = not os.path.exists(self._path('field.json'))
+        if curve.composites and not new:    # factored earlier: the field has every prime
+            curve = dataclasses.replace(curve, bad_primes=fld.load(self.dir)['bad_primes'], composites=[])
+        if curve.composites:
+            if not ecm_hours:
+                raise FactorisationNeeded('The discriminant is not fully factored. Give all its prime factors in '
+                                          '"bad_primes".', [{'n': c, 'digits': len(c)} for c in curve.composites])
+            D = abs(fld.disc(fld._ainvs5(curve.ainvs)))
+            for c in curve.composites:
+                if D % int(c):
+                    raise ValueError('The composite %s does not divide the discriminant.' % c)
+            curve = self.factor(curve, ecm_hours, cores, mem_gb, until)
+        t = time.time()
         F = fld.prepare(self.dir, curve.ainvs, curve.bad_primes, r=curve.r, name=curve.name,
                         minimal_model=curve.minimal_model)
         if new:
             self._cost(field=round(time.time() - t, 1))
+            LOG('Conductor: %d digits, %d bad primes; root number %+d.' % (len(fld.conductor(F)), len(F['bad_primes']),
+                                                                         F['w']))
         self.check_proof(curve)             # before curve.json is written
         write_json(self._path('curve.json'), curve.to_dict())
         LOG(aim_text(F))
         return F
+
+    def factor(self, curve, hours, cores=1, mem_gb=1.0, until=None):
+        """Return curve with the primes of its composites added to its bad primes (factor.split, effort kept in
+        factor.json)."""
+        os.makedirs(self.dir, exist_ok=True)
+        t = time.time()
+        try:
+            P = factor.split(self._path('factor.json'), curve.composites, hours=hours, cores=cores, mem_gb=mem_gb,
+                             until=until, log=LOG)
+        finally:
+            self._cost(factor=round(read_json(self._path('factor.json'), {}).get('wall_s', time.time() - t), 1))
+        bad = sorted({int(p) for p in curve.bad_primes} | set(P))
+        return dataclasses.replace(curve, bad_primes=[str(p) for p in bad], composites=[])
 
     def check_given(self, given):
         """Raise RankboundError if this folder holds other given relations, or is finished without them."""
@@ -234,10 +259,12 @@ class Job:
         write_json(self._path('result.json'), result)
         return result
 
-    def run(self, curve=None, cores=1, mem_gb=1.0, max_hours=None, verify=True, relations=None, sieve=True, until=None):
+    def run(self, curve=None, cores=1, mem_gb=1.0, max_hours=None, verify=True, relations=None, sieve=True, until=None,
+            ecm_hours=1.0):
         """Run every stage, resuming, and return result.json's dict; curve is needed on the first call.  With
-        relations and sieve=False, certify the bound those relations prove, without sieving.  The sieve stops
-        (Stopped) at the earlier of until and max_hours from now."""
+        relations and sieve=False, certify the bound those relations prove, without sieving.  The factor step and the
+        sieve stop (Stopped) at the earlier of until and max_hours from now; the factor step gives up
+        (FactorisationNeeded) after ecm_hours."""
         until = earlier(until, max_hours)
         if curve is not None:
             self.check_curve(curve)
@@ -254,7 +281,7 @@ class Job:
             LOG('%s: done earlier: %s' % (r['name'], r['statement']))
             return r
         if self.prm is None:
-            self.prepare(curve or self.curve())
+            self.prepare(curve or self.curve(), ecm_hours=ecm_hours, cores=cores, mem_gb=mem_gb, until=until)
         new = given is not None and self.give(given)
         if not sieve:
             given_params(self.dir)

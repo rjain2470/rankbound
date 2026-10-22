@@ -11,7 +11,7 @@ import json, os
 from dataclasses import dataclass, field as _field
 from typing import Dict, List, Optional
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 
 
 # The errors come first: the submodules import them.
@@ -24,7 +24,11 @@ class NotApplicable(RankboundError):
 
 
 class FactorisationNeeded(RankboundError):
-    """The discriminant could not be factored."""
+    """The discriminant could not be factored; composites lists what is left, with the effort spent on each."""
+
+    def __init__(self, msg, composites=()):
+        super().__init__(msg)
+        self.composites = list(composites)
 
 
 class Locked(RankboundError):
@@ -90,14 +94,17 @@ class Result:
     verified: Optional[bool]        # None if not verified here
     cost: Dict[str, Optional[float]] = _field(default_factory=dict)   # seconds per stage
     workdir: str = ''
+    conductor: Optional[str] = None # N, if computed here
 
 
 def rankbound(E, *, relations=None, r=None, points=None, bad_primes=None, sieve=None, workdir=None, cores=1,
-              mem_gb=1.0, max_hours=None, verify=True, name=None, compute=False):
+              mem_gb=1.0, max_hours=None, verify=True, name=None, compute=False, ecm_hours=1.0):
     """Return a certified bound rank E(Q) <= S under GRH, as a Result.
 
     E is [a1, a2, a3, a4, a6] or [a4, a6], on any model.  The keyword arguments are the options of `rankbound bound`
-    (README, Usage); calling again with the same workdir resumes."""
+    (README, Usage); calling again with the same workdir resumes.  Without bad_primes, what trial division leaves
+    of the discriminant is factored by ECM for at most ecm_hours (0: PARI's factor() for 10 minutes per cofactor,
+    as in 1.0); FactorisationNeeded then names what is left, and calling again continues."""
     if type(cores) is not int or cores < 1:
         raise ValueError('cores must be a positive integer.')
     if not (isinstance(mem_gb, (int, float)) and 0 < mem_gb < float('inf')):
@@ -105,6 +112,8 @@ def rankbound(E, *, relations=None, r=None, points=None, bad_primes=None, sieve=
     if max_hours is not None and not (isinstance(max_hours, (int, float)) and not isinstance(max_hours, bool)
                                       and 0 <= max_hours < float('inf')):
         raise ValueError('max_hours must be None or a number >= 0.')     # a NaN limit would never expire
+    if not (isinstance(ecm_hours, (int, float)) and not isinstance(ecm_hours, bool) and 0 <= ecm_hours < float('inf')):
+        raise ValueError('ecm_hours must be a number >= 0.')
     if workdir is not None and not isinstance(workdir, (str, os.PathLike)):
         raise ValueError('workdir must be a folder name.')
     from . import field, linalg, run
@@ -124,14 +133,17 @@ def rankbound(E, *, relations=None, r=None, points=None, bad_primes=None, sieve=
         res = known_result(field.minimal_model(*a), ','.join(map(str, a[0])))
         if res is not None:
             return res
-    c = E if isinstance(E, field.Curve) else field.from_ainvs(E, bad_primes=bad_primes, r=r, name=name)
+    c = E if isinstance(E, field.Curve) else field.from_ainvs(E, bad_primes=bad_primes, r=r, name=name,
+                                                              factor_seconds=0 if ecm_hours else 600,
+                                                              composites=bool(ecm_hours))
     if points is not None:
         c = field.with_points(c, points, r)
     given = None if relations is None else linalg.relation_input(relations)
     key = c.name + ('' if c.r is None else '_r%d' % c.r + ('p' if c.proof else ''))   # a state keeps its r and proof
     J = run.Job(workdir or os.path.join('rankbound_work', key + ('_rel' + given.digest[:8] + ('_sieve' if sieve else '')
                                                              if given else '')))
-    res = J.run(c, cores=cores, mem_gb=mem_gb, max_hours=max_hours, verify=verify, relations=given, sieve=sieve)
+    res = J.run(c, cores=cores, mem_gb=mem_gb, max_hours=max_hours, verify=verify, relations=given, sieve=sieve,
+                ecm_hours=ecm_hours)
     F = field.load(J.dir)
     r, S = res['rank_lower_bound'], res['rank_bound']
     r_proved = res.get('r_proved')
@@ -141,7 +153,7 @@ def rankbound(E, *, relations=None, r=None, points=None, bad_primes=None, sieve=
                   u=F['u'], n=F['n'], w=F['w'], selmer_bound=res['G'] + F['u'] + F['n'],
                   rank_lower_bound=r, r_proved=r_proved, proved_equal=S == 0 or (r_proved and S == r),
                   outcome=res['outcome'], statement=res['statement'], certificate=res['certificate'],
-                  verified=res['verified'], cost=res.get('cost', {}), workdir=J.dir)
+                  verified=res['verified'], cost=res.get('cost', {}), workdir=J.dir, conductor=field.conductor(F))
 
 
 def known_result(mm, curve=''):
