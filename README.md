@@ -193,8 +193,10 @@ folder (default `./rankbound_work`); and `<certificate>` is a `.cert.json` file 
 
 `rankbound <command> --help` lists every option. A curve list is
 `{"curves": [{"id": 1, "ainvs": [...], "bad_primes": [...]}, ...]}`, where `bad_primes` lists the primes of the
-discriminant; factors not yet split can be listed as `composites`, which are factored as below. The exit status is 0
-on success, 1 on a refused curve or a failed check, and 2 on a usage error.
+discriminant; factors not yet split can be listed as `composites`. Both are optional: a curve without them is factored
+as below, with `--ecm-hours` for each curve; a curve whose factoring stops is skipped, and running the same command
+again continues it. The exit status is 0 on success, 1 on a refused or skipped curve or a failed check, and 2 on a
+usage error.
 
 Without `--bad-primes`, `rankbound` factors the discriminant itself: trial division, then ECM on what is left, with
 GMP-ECM on `--cores` processes (the `ecm` program on the PATH, or the one `RANKBOUND_ECM` names), or with PARI's
