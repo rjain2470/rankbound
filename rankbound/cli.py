@@ -100,7 +100,9 @@ def cmd_bound(a):
         raise SystemExit('--relations works with a single curve only.')
     try:
         rels = linalg.relation_input(a.relations)
-        return report(Job(folder(a, cs[0], rels)).run(cs[0], cores=a.cores, mem_gb=a.mem, until=a.until,
+        J = Job(folder(a, cs[0], rels))
+        cs[0] = field.factored(cs[0], a.ecm_hours, J.dir)
+        return report(J.run(cs[0], cores=a.cores, mem_gb=a.mem, until=a.until,
                                                       relations=rels, sieve=a.keep_sieving, ecm_hours=a.ecm_hours))
     except Stopped:
         log(STOPPED)
@@ -139,9 +141,10 @@ def cmd_estimate(a, run=False):
     plan, failed = [], []
     for c in cs:
         J = Job(folder(a, c))
-        if os.path.exists(os.path.join(J.dir, 'result.json')):
-            plan.append((0, J, c)); continue
         try:
+            c = field.factored(c, a.ecm_hours, J.dir)      # a list curve without bad_primes
+            if os.path.exists(os.path.join(J.dir, 'result.json')):
+                plan.append((0, J, c)); continue
             J.prepare(c, ecm_hours=a.ecm_hours, cores=a.cores, mem_gb=a.mem, until=until)
             plan.append((J.tune(a.mem, a.cores)['model']['core_hours'], J, c))
         except Stopped:                     # the time limit, while factoring

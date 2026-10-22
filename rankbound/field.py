@@ -117,7 +117,7 @@ def with_points(curve, points, r=None):
 class Curve:
     name: str
     ainvs: List[str]                          # the input model
-    bad_primes: List[str]
+    bad_primes: Optional[List[str]]           # None: not given in a curve list (factored())
     r: Optional[int] = None                   # a known rank lower bound
     proof: Optional[dict] = None              # points (and primes) that prove r
     source: str = 'cited'                     # where r is from, without a proof
@@ -264,8 +264,8 @@ def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp', factor_second
 
 def from_list(path, ids=None):
     """Return the curves of a JSON curve list (optionally gzipped) whose id is in ids (None: all).  Each needs id (or
-    icarm_id), ainvs and bad_primes (and composites, if bad_primes are not all the primes); a ValueError names the
-    curve."""
+    icarm_id) and ainvs; bad_primes (and composites, if bad_primes are not all the primes) or neither, to be factored
+    (factored()); a ValueError names the curve."""
     try:
         with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as f:
             d = json.load(f)
@@ -301,10 +301,16 @@ def from_list(path, ids=None):
             if pf is not None and pf.get('ainvs') is None:
                 pf = dict(pf, ainvs=ai)
             r = r_value(c.get('r'))
+            if 'bad_primes' in c:
+                bad = [canon(p, 'bad_primes') for p in seq(c['bad_primes'], 'bad_primes')]
+            elif c.get('composites'):
+                raise ValueError('"composites" needs "bad_primes" (the primes found so far).')
+            else:
+                bad = None
             if r is None and pf is not None and pf.get('points'):   # r defaults to the number of points
                 r = len(pf['points'])
             out.append(Curve(name=check_name(c.get('name', ('icarm%s' if icarm else 'curve%s') % i)), ainvs=ai,
-                             bad_primes=[canon(p, 'bad_primes') for p in seq(c['bad_primes'], 'bad_primes')],
+                             bad_primes=bad,
                              composites=list(seq(c.get('composites', []), 'composites')), r=r, proof=pf,
                              source='ICARM #%s' % i if icarm else 'curve %s of %s' % (i, src), minimal_model=mm))
         except (ValueError, TypeError) as e:
@@ -320,6 +326,23 @@ def from_list(path, ids=None):
     if not out:
         raise ValueError('%s has no curves.' % src)
     return out
+
+
+def factored(curve, ecm_hours, workdir):
+    """Return curve (of a list) given without bad_primes with them: from workdir's field.json if it was prepared
+    there, else as from_ainvs finds them, with what is left in composites for Job.prepare's ECM step (with ecm_hours
+    0, PARI's factor() for 600 s per cofactor, as in 1.0)."""
+    if curve.bad_primes is not None:
+        return curve
+    p, q = os.path.join(workdir, 'field.json'), os.path.join(workdir, 'curve.json')
+    if os.path.exists(p) and os.path.exists(q) and [str(x) for x in read_json(q)['ainvs']] == list(curve.ainvs):
+        return dataclasses.replace(curve, bad_primes=read_json(p)['bad_primes'], composites=[])
+    try:
+        c = from_ainvs(curve.ainvs, factor_seconds=0 if ecm_hours else 600, composites=bool(ecm_hours))
+    except FactorisationNeeded as e:
+        raise FactorisationNeeded('PARI could not factor the discriminant. Give its prime factors in "bad_primes".',
+                                  e.composites)
+    return dataclasses.replace(curve, bad_primes=c.bad_primes, composites=c.composites)
 
 
 # ---------- the field

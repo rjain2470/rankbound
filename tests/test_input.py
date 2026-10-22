@@ -106,7 +106,7 @@ class TestGpInput(unittest.TestCase):
                     {'proof': {'points': [['1', '2']], 'primes': [5], 'ainvs': ['0', '0', '1', '-1', '0;' + self.EVIL]}}):
             with self.assertRaisesRegex(ValueError, '^list.json, curve 1: ', msg=bad):
                 self.load(**bad)
-        for key in ('id', 'ainvs', 'bad_primes'):         # the required keys: a missing one is named
+        for key in ('id', 'ainvs'):                       # the required keys: a missing one is named
             with tempfile.TemporaryDirectory() as t:
                 path = os.path.join(t, 'list.json')
                 with open(path, 'w') as f:
@@ -114,6 +114,16 @@ class TestGpInput(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '^Entry 1 of list.json has no "id".$' if key == 'id' else
                                             '^Curve 1 of list.json has no "%s".$' % key):
                     field.from_list(path)
+        # without bad_primes: factored later (field.factored); composites alone are refused
+        with tempfile.TemporaryDirectory() as t:
+            path = os.path.join(t, 'list.json')
+            for extra, err in (({}, None), ({'composites': ['3997']}, '"composites" needs "bad_primes"')):
+                with open(path, 'w') as f:
+                    json.dump({'curves': [dict({k: v for k, v in self.GOOD.items() if k != 'bad_primes'}, **extra)]}, f)
+                if err:
+                    self.assertRaisesRegex(ValueError, '^list.json, curve 1: %s' % err, field.from_list, path)
+                else:
+                    self.assertIsNone(field.from_list(path)[0].bad_primes)
 
     def test_prover_gp(self):
         """from_ainvs, compute and rank_proof refuse a non-canonical value before gp runs."""
