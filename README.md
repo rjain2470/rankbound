@@ -39,7 +39,7 @@ rankbound verify --cores 4 certificates/
 
 To download the certificate for curve #N alone (macOS/Linux):
 ```
-N=752
+N=752 # example
 R=https://zenodo.org/records/23479586/files
 set -- $(curl -sL "$R/certificate_index.tsv?download=1" | awk -F'\t' -v n="icarm$N" '$1==n {print $2, $6, $6+$7-1}')
 if [ $# = 3 ]; then curl -sL -r "$2-$3" "$R/certificates_$1.tar?download=1" | gunzip > icarm$N.cert.json; else echo "No certificate for #$N"; fi
@@ -77,6 +77,7 @@ To compute an upper bound on $\mathrm{rank}~E(\mathbb{Q})$, run:
 
 ```
 $ rankbound bound 0,-1,1,-929,-10595
+22:45:24 Conductor: 3 digits, 1 bad prime; root number +1.
 22:45:24 Aim: rank <= 0 (the least possible). Stops there or when the bound stops improving.
 22:45:24 Estimated cost: 0.00 core-hours (0.00 h on 1 core).
 22:45:34 10,407 relations: rank <= 2 so far (aim: rank <= 0).
@@ -102,6 +103,7 @@ Given the relations of a certificate, `rankbound` proves the same bound without 
 
 ```
 $ rankbound bound 0,-1,1,-929,-10595 --relations rankbound_work/0_-1_1_-929_-10595/0_-1_1_-929_-10595.cert.json
+22:46:12 Conductor: 3 digits, 1 bad prime; root number +1.
 22:46:12 Aim: rank <= 0 (the least possible). Stops there or when the bound stops improving.
 22:46:12 37 relations: rank <= 2 (aim: rank <= 0).
 22:46:12 Certificate: /.../rankbound_work/0_-1_1_-929_-10595_rel851f7108/0_-1_1_-929_-10595.cert.json
@@ -114,6 +116,7 @@ $\mathrm{rank}~E(\mathbb{Q}) = 2$:
 
 ```
 $ rankbound bound 0,1,1,-2,0 --points points.txt --compute
+21:35:58 Conductor: 3 digits, 1 bad prime; root number +1.
 21:35:58 Aim: rank <= 2 = r, which proves rank = 2.
 21:35:58 Estimated cost: 0.00 core-hours (0.00 h on 1 core).
 21:36:07 11,952 relations: rank <= 2 so far (aim: rank <= 2).
