@@ -6,7 +6,7 @@ jobs:
     container: debian:trixie        # PARI/GP 2.17 (Ubuntu's is older)
     steps:
       - uses: actions/checkout@v4
-      - run: apt-get update && apt-get install -y --no-install-recommends pari-gp python3 python3-venv make gcc libc6-dev
+      - run: apt-get update && apt-get install -y --no-install-recommends pari-gp gmp-ecm python3 python3-venv make gcc libc6-dev
       - run: gp --version-short </dev/null
       - run: python3 -m venv /tmp/v && /tmp/v/bin/pip install . && cd /tmp && /tmp/v/bin/rankbound bound 0,1,1,-2,0 --compute
       - run: make test
