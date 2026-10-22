@@ -137,6 +137,8 @@ $ rankbound bound 0,1,1,-2,0
 - a C compiler
 - for large fields only (when the bound of \[[BDF08](#bdf08)\] exceeds $2^{11}$): CADO-NFS at commit `692ecb7e62f0f3bdab88ee44cc60b8ded0ea1a1b`, whose build
   needs cmake 3.18 or later, GMP and a C++20 compiler
+- optionally, GMP-ECM (the `ecm` program; e.g. `apt install gmp-ecm`, `brew install gmp-ecm`), to factor discriminants
+  that trial division and PARI cannot; without it, PARI's `factor()` is used
 
 Checking a certificate needs only PARI/GP, Python and a C compiler.
 
@@ -182,6 +184,7 @@ folder (default `./rankbound_work`); and `<certificate>` is a `.cert.json` file 
 --points FILE       r independent points, one "x y" per line: also prove rank >= r
 --relations FILE    prove the bound from these relations, without sieving
 --bad-primes P,...  the primes of the discriminant, if it is hard to factor
+--ecm-hours H       factor the discriminant by ECM for at most H hours (default 1)
 --curves FILE       several curves from a JSON list (select with --ids)
 --cores N           number of cores
 --max-hours H       stop after H hours (run again to resume)
@@ -189,8 +192,15 @@ folder (default `./rankbound_work`); and `<certificate>` is a `.cert.json` file 
 ```
 
 `rankbound <command> --help` lists every option. A curve list is
-`{"curves": [{"id": 1, "ainvs": [...], "bad_primes": [...]}, ...]}`, where `bad_primes` lists every prime of the
-discriminant. The exit status is 0 on success, 1 on a refused curve or a failed check, and 2 on a usage error.
+`{"curves": [{"id": 1, "ainvs": [...], "bad_primes": [...]}, ...]}`, where `bad_primes` lists the primes of the
+discriminant; factors not yet split can be listed as `composites`, which are factored as below. The exit status is 0
+on success, 1 on a refused curve or a failed check, and 2 on a usage error.
+
+Without `--bad-primes`, `rankbound` factors the discriminant itself: trial division, then ECM on what is left, with
+GMP-ECM on `--cores` processes (the `ecm` program on the PATH, or the one `RANKBOUND_ECM` names), or with PARI's
+`factor()` if GMP-ECM is not installed. After `--ecm-hours` it stops and names each composite left, with the effort
+spent on it; running the same command again continues where it stopped. A composite with no factor up to about 60
+digits needs the number field sieve (e.g. CADO-NFS); give its primes with `--bad-primes`.
 
 From Python:
 
