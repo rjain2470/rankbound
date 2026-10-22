@@ -143,9 +143,15 @@ Checking a certificate needs only PARI/GP, Python and a C compiler.
 ## Installation
 
 ```
-make build        # compile f2elim and f2rank (before pip install)
+pip install git+https://github.com/rjain2470/rankbound   # the `rankbound` command; compiles f2elim and f2rank
+```
+
+From a checkout:
+
+```
+make build        # compile f2elim and f2rank, to run it in place as `python3 -m rankbound`
 make test         # about 3 minutes
-pip install .     # optional: the `rankbound` command; otherwise use `python3 -m rankbound`
+pip install .     # the `rankbound` command (compiles f2elim and f2rank itself)
 ```
 
 For large fields, build CADO-NFS into `rankbound/cado/` with `make cado CADO_TARBALL=cado-nfs.tar.gz`. Build it on
