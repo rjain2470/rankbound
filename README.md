@@ -125,7 +125,7 @@ $ rankbound bound 0,1,1,-2,0 --points points.txt --compute
 21:36:08 RESULT 0_1_1_-2_0: rank = 2 under GRH, certificate verified (0.00 core-h)
 ```
 
-Curves already certified (listed in `certificates.tsv`) are looked up rather than computed. To recompute the bound for such a curve anyway, add `--compute` to the command:
+Curves already listed in `certificates.tsv` are looked up rather than computed. To recompute the bound for such a curve anyway, add `--compute` to the command:
 ```
 $ rankbound bound 0,1,1,-2,0 --compute
 ```
