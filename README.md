@@ -125,12 +125,9 @@ $ rankbound bound 0,1,1,-2,0 --points points.txt --compute
 21:36:08 RESULT 0_1_1_-2_0: rank = 2 under GRH, certificate verified (0.00 core-h)
 ```
 
-Curves already certified (listed in `certificates.tsv`) are looked up rather than computed; `--compute`, as above,
-computes anyway:
-
+Curves already certified (listed in `certificates.tsv`) are looked up rather than computed. To recompute the bound for such a curve anyway, add `--compute` to the command:
 ```
-$ rankbound bound 0,1,1,-2,0
-21:36:08 icarm2 is already certified: rank E(Q) = 2 under GRH. Nothing was computed.
+$ rankbound bound 0,1,1,-2,0 --compute
 ```
 
 ## Requirements
@@ -146,19 +143,16 @@ $ rankbound bound 0,1,1,-2,0
 Checking a certificate needs only PARI/GP, Python and a C compiler.
 
 ## Installation
-
+You can install `rankbound` using the following command:
 ```
-pip install git+https://github.com/rjain2470/rankbound   # the `rankbound` command; compiles f2elim and f2rank
+pip install git+https://github.com/rjain2470/rankbound
 ```
-
 From a checkout:
-
 ```
 make build        # compile f2elim and f2rank, to run it in place as `python3 -m rankbound`
 make test         # about 3 minutes
 pip install .     # the `rankbound` command (compiles f2elim and f2rank itself)
 ```
-
 For large fields, build CADO-NFS into `rankbound/cado/` with `make cado CADO_TARBALL=cado-nfs.tar.gz`. Build it on
 the oldest CPU it will run on; on macOS, set `CXXFLAGS="-std=c++20 -fexperimental-library"`.
 
