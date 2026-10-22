@@ -135,13 +135,14 @@ def cmd_estimate(a, run=False):
     """estimate: prepare and tune every curve; with run (bound), then run them, cheapest first.  Of several curves,
     one that fails is skipped with its reason.  Returns 1 if a curve was skipped or failed, else 0."""
     cs = curves(a)
+    until = a.until if run else deadline()      # estimate: factoring stops before a Slurm job's end too
     plan, failed = [], []
     for c in cs:
         J = Job(folder(a, c))
         if os.path.exists(os.path.join(J.dir, 'result.json')):
             plan.append((0, J, c)); continue
         try:
-            J.prepare(c, ecm_hours=a.ecm_hours, cores=a.cores, mem_gb=a.mem, until=getattr(a, 'until', None))
+            J.prepare(c, ecm_hours=a.ecm_hours, cores=a.cores, mem_gb=a.mem, until=until)
             plan.append((J.tune(a.mem, a.cores)['model']['core_hours'], J, c))
         except Stopped:                     # the time limit, while factoring
             log(STOPPED)

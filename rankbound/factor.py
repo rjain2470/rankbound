@@ -18,8 +18,13 @@ PM1_B1 = 1e9            # P-1 once per composite,
 PM1_AFTER = 3           # after the levels below this one,
 PM1_MIN_S = 1200        # when at least this long is left
 CALL_S = 300            # aim per GMP-ECM call
-ECM_FOUND = (2, 6, 8, 10, 14)   # GMP-ECM's exit codes for a factor found (0: none; odd: an error)
-MAX_FAILS = 3           # engine failures in a row that stop the step
+# A composite of at most PARI_DIGITS digits gets PARI's factor() for up to PARI_S seconds before ECM: its primes may all
+# be small, and then nearly every ECM curve finds the whole number, which is no split.
+PARI_DIGITS = 60
+PARI_S = 60
+ECM_FOUND = (2, 6, 10, 14)      # GMP-ECM's exit codes for a proper factor found (0: none; 8: the input number; odd: an error)
+ECM_WHOLE = 8
+MAX_FAILS = 3           # failures of one kind of call on one composite that stop the step
 POLL_S = 0.2
 
 
@@ -178,8 +183,8 @@ def effort(n, r):
 class Task:
     """One engine call on the composite n: kind 'pari', 'pm1' or a level index, with k curves."""
 
-    def __init__(self, n, kind, k=1):
-        self.n, self.kind, self.k = n, kind, k
+    def __init__(self, n, kind, k=1, limit=None):
+        self.n, self.kind, self.k, self.limit = n, kind, k, limit       # limit: seconds before it is stopped
         self.proc = self.out = None
         self.t0 = 0.0
 
@@ -198,7 +203,7 @@ class Task:
         self.t0 = time.time()
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=self.out, stderr=subprocess.STDOUT,
-                                         text=True, start_new_session=True)
+                                         text=True)
         except OSError as e:
             self.out.close()
             raise RankboundError('Could not start %s: %s' % (cmd[0], e))
@@ -210,16 +215,14 @@ class Task:
 
     def kill(self):
         if self.proc.poll() is None:
-            try:
-                os.killpg(self.proc.pid, 9)
-            except OSError:
-                pass
+            self.proc.kill()
             self.proc.wait()
         self.out.close()
 
     def result(self):
         """Return (divisors found, outcome): 'none' (ran to the end without a factor: the only one credited), 'found',
-        or an error message."""
+        'whole' (GMP-ECM found the number itself: no split, and how many curves ran is not known), or an error
+        message."""
         self.out.seek(0)
         text = self.out.read()
         self.out.close()
@@ -229,12 +232,14 @@ class Task:
             if rc or err:
                 return [], 'gp exit %d: %s' % (rc, ' '.join(err)[:300] or text[-300:].strip())
             text = '\n'.join(l for l in text.splitlines() if not l.lstrip().startswith('***'))
+        elif rc == ECM_WHOLE:
+            return [], 'whole'
         elif rc != 0 and rc not in ECM_FOUND:
             return [], 'GMP-ECM exit %d: %s' % (rc, text[-300:].strip())
         ds = [int(x) for x in re.findall(r'[0-9]+', text)]
         ds = [d for d in ds if 1 < d < self.n and self.n % d == 0]
-        if self.kind == 'pari' and not ds:
-            return [], 'factor() gave no factor: %s' % text[-300:].strip()
+        if not ds and (self.kind == 'pari' or rc in ECM_FOUND):
+            return [], 'a factor was reported but none read: %s' % text[-300:].strip()
         return ds, 'found' if ds else 'none'
 
 
@@ -243,9 +248,10 @@ def spc(r, L):
     return r['spc'].get(str(L)) or SPC_GUESS[L] * (r['digits'] / 140) ** 2
 
 
-def next_task(st, open_, running, ecm, left):
+def next_task(st, open_, running, ecm, left, cores=1):
     """Return the next Task: the open composite furthest behind, at its first level not covered by finished and
-    running curves; P-1 once its first levels are done.  None if nothing fits in the seconds left."""
+    running curves; P-1 once its first levels are done; first PARI_S seconds of PARI for a small one.  None if
+    nothing fits in the seconds left."""
     cands = []
     for n in open_:
         r = st['numbers'][str(n)]
@@ -254,14 +260,18 @@ def next_task(st, open_, running, ecm, left):
             if not mine:
                 cands.append((0, 0.0, r['digits'], Task(n, 'pari')))
             continue
-        if (not r['pm1'] and not any(t.kind == 'pm1' for t in mine) and left >= PM1_MIN_S
-                and level_done(r) >= PM1_AFTER):
+        if r['digits'] <= PARI_DIGITS and not r['pari_s']:
+            if not mine:
+                cands.append((-1, 0.0, r['digits'], Task(n, 'pari', limit=PARI_S)))
+            continue                        # ECM after PARI's try
+        if (not r['pm1'] and not any(t.kind == 'pm1' for t in mine) and level_done(r) >= PM1_AFTER
+                and left >= max(PM1_MIN_S, 1.5 * r.get('pm1_cut_s', 0))):     # not again into a cut that short
             cands.append((PM1_AFTER - 0.5, 0.0, r['digits'], Task(n, 'pm1')))
         for L in range(len(LEVELS)):
             need = LEVELS[L][2]
             have = r['done'].get(str(L), 0) + sum(t.k for t in mine if t.kind == L)
             if have < need:
-                k = min(need - have, max(1, int(CALL_S / spc(r, L))), int(left / spc(r, L)))
+                k = min(need - have, -(-need // cores), max(1, int(CALL_S / spc(r, L))), int(left / spc(r, L)))
                 if k >= 1:
                     cands.append((L, have / need, r['digits'], Task(n, L, k)))
                 break
@@ -281,8 +291,11 @@ def charge(st, t):
 
 
 def stop_task(st, t):
-    """Kill the call t; its time counts, its curves do not."""
-    charge(st, t)
+    """Kill the call t; its time counts, its curves do not.  A P-1 cut short records how long it had."""
+    secs = charge(st, t)
+    if t.kind == 'pm1':
+        r = st['numbers'][str(t.n)]
+        r['pm1_cut_s'] = max(r.get('pm1_cut_s', 0), secs)
     t.kill()
 
 
@@ -328,11 +341,11 @@ def _split(path, composites, hours, cores, mem_gb, until, ecm, gp, log):
     log('Factoring: %s left; %s on %d core%s, for at most %s.' % (
         ', '.join(label(c) for c in C), 'GMP-ECM (%s)' % ecm if ecm else "PARI's factor() (no GMP-ECM found)", cores,
         's' if cores > 1 else '', duration(hours * 3600)))
-    running, fails, maxmem = [], 0, max(100, int(800 * mem_gb))
+    running, fails, maxmem = [], {}, max(100, int(800 * mem_gb))
     try:
         while C and time.time() < end:
             while len(running) < cores:
-                t = next_task(st, C, running, ecm, end - time.time())
+                t = next_task(st, C, running, ecm, end - time.time(), cores)
                 if t is None:
                     break
                 t.start(ecm, gp, maxmem)
@@ -340,6 +353,10 @@ def _split(path, composites, hours, cores, mem_gb, until, ecm, gp, log):
             if not running:
                 break                       # nothing fits in the time left, or every level is done
             time.sleep(POLL_S)
+            for t in [t for t in running if t.limit and time.time() - t.t0 > t.limit and t.proc.poll() is None]:
+                stop_task(st, t); running.remove(t)
+                log('%s did not split %s in %s; ECM next.' % (t.how(), label(t.n), duration(t.limit)))
+                write_json(path, st)
             for t in [t for t in running if t.proc.poll() is not None]:
                 if t not in running:                # killed below, after a split
                     continue
@@ -355,14 +372,17 @@ def _split(path, composites, hours, cores, mem_gb, until, ecm, gp, log):
                         r['done'][L] = r['done'].get(L, 0) + t.k
                         old = r['spc'].get(L)
                         r['spc'][L] = secs / t.k if old is None else 0.7 * old + 0.3 * secs / t.k
+                elif outcome == 'whole':
+                    log('%s found the whole of %s (no split; nothing credited).' % (t.how(), label(t.n)))
                 elif outcome != 'found':
-                    fails += 1
-                    log('%s failed on %s (%d in a row; nothing credited): %s' % (t.how(), label(t.n), fails, outcome))
-                    if fails >= MAX_FAILS:
-                        raise RankboundError('%s failed %d times in a row: %s' % (t.how(), fails, outcome))
+                    key = (t.n, t.kind)
+                    fails[key] = fails.get(key, 0) + 1
+                    log('%s failed on %s (%d time%s; nothing credited): %s' % (
+                        t.how(), label(t.n), fails[key], 's' if fails[key] > 1 else '', outcome))
+                    if fails[key] >= MAX_FAILS:
+                        raise RankboundError('%s failed %d times on %s: %s' % (t.how(), fails[key], label(t.n), outcome))
                     write_json(path, st)
                     continue
-                fails = 0
                 for d in ds:                        # each divisor splits what is still open of t.n
                     for m in resolve(st, t.n)[1]:
                         parts = split_by(st, m, d, t.how())
@@ -392,8 +412,10 @@ def _split(path, composites, hours, cores, mem_gb, until, ecm, gp, log):
             'GMP-ECM' if ecm else "PARI's factor()", duration(wall), core / 3600, len(C), 's' if len(C) > 1 else '', left,
             'Every ECM level is done: factor it by NFS (e.g. CADO-NFS) and give the prime factors (--bad-primes, '
             'bad_primes).' if beyond else
-            'Run again to continue (--ecm-hours, ecm_hours sets the time), or give the prime factors (--bad-primes, '
-            'bad_primes).' + ('' if ecm else ' With GMP-ECM (RANKBOUND_ECM or ecm on PATH) the effort is kept and '
-                              'resumed level by level.')),
+            ('Run again to continue (--ecm-hours, ecm_hours sets the time), or give the prime factors '
+             '(--bad-primes, bad_primes).' if ecm else
+             "PARI's factor() starts over on each run, so a longer --ecm-hours (ecm_hours) is the way on; or install "
+             'GMP-ECM (RANKBOUND_ECM or ecm on PATH), whose effort is kept and resumed level by level; or give the '
+             'prime factors (--bad-primes, bad_primes).')),
         composites=[dict(n=str(c), **{k: st['numbers'][str(c)][k] for k in ('digits', 'pm1', 'done', 'core_s')})
                     for c in C])

@@ -87,6 +87,8 @@ class Job:
                                           '"bad_primes".', [{'n': c, 'digits': len(c)} for c in curve.composites])
             D = abs(fld.disc(fld._ainvs5(curve.ainvs)))
             for c in curve.composites:
+                if int(c) < 2:
+                    raise ValueError('The composite %s is not an integer above 1.' % c)
                 if D % int(c):
                     raise ValueError('The composite %s does not divide the discriminant.' % c)
             curve = self.factor(curve, ecm_hours, cores, mem_gb, until)

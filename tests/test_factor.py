@@ -3,7 +3,7 @@ and PARI's factor(); a known split, a composite that must give up at the time li
 whole runs on a curve whose discriminant trial division leaves composite."""
 import fcntl, json, os, shutil, subprocess, sys, tempfile, time, unittest
 from unittest import mock
-from rankbound import FactorisationNeeded, Locked, RankboundError, Stopped, factor, field, rankbound
+from rankbound import FactorisationNeeded, Locked, RankboundError, Stopped, cli, factor, field, rankbound, read_json
 from rankbound.verify import run_gp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,7 +31,8 @@ def log_lines(path):
 
 
 class TestFakeECM(unittest.TestCase):
-    """The GMP-ECM path, with a stand-in that finds a given prime from a given B1 on."""
+    """The GMP-ECM path, with a stand-in that finds a given prime from a given B1 on; PARI's first try on small
+    composites is off (PARI_DIGITS 0) except in test_small."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -44,10 +45,13 @@ class TestFakeECM(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {'FAKE_ECM_LOG': self.calls, 'FAKE_ECM_SPC': '0.002',
                                                 'FAKE_ECM_FIND': '', 'FAKE_ECM_FAIL': ''})
         self.env.start()
+        self.small = mock.patch.object(factor, 'PARI_DIGITS', 0)
+        self.small.start()
         self.path = os.path.join(self.tmp, 'w', 'factor.json')
         self.log = []
 
     def tearDown(self):
+        self.small.stop()
         self.env.stop()
         shutil.rmtree(self.tmp)
 
@@ -64,6 +68,26 @@ class TestFakeECM(unittest.TestCase):
         self.assertEqual(self.split([P12 * P30, P30 ** 2], hours=0.01), [P12, P30])
         self.assertEqual(len(log_lines(self.calls)), 1)
 
+    def test_small(self):
+        """A composite of two primes just above 10^6, on which GMP-ECM finds only the whole number (exit 8), is split
+        by PARI's first try; a C79 on which PARI's try runs out goes on to ECM, where finding the whole number
+        credits no curves."""
+        os.environ['FAKE_ECM_WHOLE'] = '1'
+        n = 1000003 * 1000033
+        with mock.patch.object(factor, 'PARI_DIGITS', 60):
+            self.assertEqual(self.split([n], hours=0.01), [1000003, 1000033])
+            self.assertEqual(log_lines(self.calls), [])
+            self.assertIn("C13 = p7 * p7 (PARI's factor()", self.log[1])
+            with mock.patch.object(factor, 'PARI_S', 1), mock.patch.object(factor, 'PARI_DIGITS', 80):
+                with self.assertRaises(FactorisationNeeded):
+                    self.split([HARD], hours=4 / 3600)
+        self.assertIn("PARI's factor() did not split C79 in 1 s; ECM next.", self.log)
+        self.assertTrue(log_lines(self.calls))
+        r = read_json(self.path)['numbers'][str(HARD)]
+        self.assertGreater(r['pari_s'], 0.5)
+        self.assertEqual(r['done'], {})
+        self.assertIn('GMP-ECM, level 20 found the whole of C79 (no split; nothing credited).', self.log)
+
     def test_give_up_and_resume(self):
         """A composite not split in 3 s gives up with FactorisationNeeded, naming it and the levels done; the effort
         is in factor.json, and the next call continues from it (no level is repeated) and splits it."""
@@ -79,7 +103,7 @@ class TestFakeECM(unittest.TestCase):
         [c] = e.exception.composites
         self.assertEqual((c['n'], c['digits']), (str(n), 69))
         self.assertEqual((c['done'].get('0'), c['done'].get('1')), (74, 221))
-        st = json.load(open(self.path))
+        st = read_json(self.path)
         done = st['numbers'][str(n)]['done']
         self.assertEqual(done, c['done'])
         first = len(log_lines(self.calls))
@@ -92,14 +116,15 @@ class TestFakeECM(unittest.TestCase):
                 self.assertFalse([l for l in again if ' %.0f ' % factor.LEVELS[int(L)][1] in l], (L, again))
 
     def test_parallel(self):
-        """With 3 cores, one composite gets 3 calls at once (levels 20, 25, 30); when one finds a factor, the other
-        two are stopped at once and credited nothing."""
-        os.environ.update(FAKE_ECM_FIND='%d:11000-11000' % P12, FAKE_ECM_SPC='0.05')
+        """With 3 cores, one composite gets 3 calls of level 20 at once (25 + 25 + 24 curves); when one finds a
+        factor, the other two are stopped at once and credited nothing."""
+        os.environ.update(FAKE_ECM_FIND='%d:11000' % P12, FAKE_ECM_SPC='0.2', FAKE_ECM_ONCE=os.path.join(self.tmp, 'once'))
         t = time.time()
         self.assertEqual(self.split([P12 * P40], hours=0.01, cores=3), [P12, P40])
-        self.assertLess(time.time() - t, 5)         # level 30 alone would take 23 s
-        self.assertEqual(sorted(l.split()[6] for l in log_lines(self.calls)), ['11000', '250000', '50000'])
-        r = json.load(open(self.path))['numbers'][str(P12 * P40)]
+        self.assertLess(time.time() - t, 3)         # each of the other calls would take 5 s
+        self.assertEqual(sorted(l.split()[5:7] for l in log_lines(self.calls)),
+                         [['24', '11000'], ['25', '11000'], ['25', '11000']])
+        r = read_json(self.path)['numbers'][str(P12 * P40)]
         self.assertEqual((r['status'], r['done']), ('split', {}))
 
     def test_pm1(self):
@@ -115,23 +140,24 @@ class TestFakeECM(unittest.TestCase):
         self.assertEqual(len(pm1), 1, calls)
         before = [float(l.split()[-2]) for l in calls[:pm1[0]]]
         self.assertEqual((sorted(set(before)), before), ([11000, 50000, 250000], sorted(before)))
-        st = json.load(open(self.path))
+        st = read_json(self.path)
         part = st['numbers'][str(P30 * P40)]
         self.assertTrue(part['pm1'])
         self.assertEqual({k: part['done'][k] for k in '012'}, {'0': 74, '1': 221, '2': 453})
 
     def test_engine_failure(self):
-        """Three engine failures in a row stop the step with RankboundError; nothing is credited."""
+        """Three failures of one kind of call on one composite stop the step with RankboundError; nothing is
+        credited."""
         os.environ['FAKE_ECM_FAIL'] = '1'
-        with self.assertRaisesRegex(RankboundError, '^GMP-ECM, level 20 failed 3 times in a row: GMP-ECM exit 1'):
+        with self.assertRaisesRegex(RankboundError, '^GMP-ECM, level 20 failed 3 times on C79: GMP-ECM exit 1'):
             self.split([HARD], hours=0.01)
-        self.assertEqual(json.load(open(self.path))['numbers'][str(HARD)]['done'], {})
+        self.assertEqual(read_json(self.path)['numbers'][str(HARD)]['done'], {})
 
     def test_stopped(self):
         """until (a run's --max-hours) before the ECM limit gives Stopped, with the effort saved."""
         with self.assertRaises(Stopped):
             self.split([HARD], hours=1, until=time.time() + 1.5)
-        self.assertGreater(json.load(open(self.path))['core_s'], 0)
+        self.assertGreater(read_json(self.path)['core_s'], 0)
 
     def test_locked(self):
         """Another process factoring in the same folder: Locked."""
@@ -156,19 +182,20 @@ class TestFakeECM(unittest.TestCase):
     def test_cli_resume(self):
         """`rankbound estimate` on E15 with GMP-ECM that finds nothing gives up (exit 1, the message); run again
         with a factor in reach, it continues from factor.json and finishes."""
-        env = dict(ENV, RANKBOUND_ECM=self.ecm, FAKE_ECM_LOG=self.calls, FAKE_ECM_SPC='0.05', FAKE_ECM_FIND='')
-        cmd = CLI + ['estimate', ','.join(map(str, E15)), '--dir', os.path.join(self.tmp, 'cli'), '--ecm-hours', '0.0006']
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertIn('Factoring: C15 left; GMP-ECM (%s) on 1 core, for at most 2 s.' % self.ecm, r.stdout)
-        self.assertRegex(r.stderr, r'^GMP-ECM stopped after [0-9]+ s .*1 composite left, C15 \(')
+        os.environ.update(RANKBOUND_ECM=self.ecm, FAKE_ECM_SPC='0.05')
+        cmd = ['estimate', ','.join(map(str, E15)), '--dir', os.path.join(self.tmp, 'cli'), '--ecm-hours']
+        with self.assertLogs('rankbound', 'INFO') as lg, self.assertRaises(SystemExit) as e:
+            cli.main(cmd + ['0.0006'])
+        self.assertIn('Factoring: C15 left; GMP-ECM (%s) on 1 core, for at most 2 s.' % self.ecm, lg.output[0])
+        self.assertRegex(str(e.exception.code), r'^GMP-ECM stopped after [0-9]+ s .*1 composite left, C15 \(')
         first = len(log_lines(self.calls))
         self.assertGreater(first, 0)
-        r = subprocess.run(cmd[:-1] + ['0.01'], env=dict(env, FAKE_ECM_FIND='17331101:11000'), capture_output=True,
-                           text=True, timeout=120)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('C15 = p8 * p8 (GMP-ECM, level ', r.stdout)
-        self.assertIn('Conductor: 18 digits, 4 bad primes; root number +1.', r.stdout)
+        os.environ['FAKE_ECM_FIND'] = '17331101:11000'
+        with self.assertLogs('rankbound', 'INFO') as lg:
+            self.assertEqual(cli.main(cmd + ['0.01']), 0)
+        out = '\n'.join(lg.output)
+        self.assertIn('C15 = p8 * p8 (GMP-ECM, level ', out)
+        self.assertIn('Conductor: 18 digits, 4 bad primes; root number +1.', out)
         self.assertGreater(len(log_lines(self.calls)), first)
 
 
@@ -184,7 +211,7 @@ class TestPari(unittest.TestCase):
                 factor.split(os.path.join(d, 'b.json'), [HARD], hours=3 / 3600, ecm=None, log=lambda m: None)
             self.assertLess(time.time() - t, 6)
             self.assertRegex(str(e.exception), r"^PARI's factor\(\) stopped after [0-9]+ s .*C79 \(PARI's factor\(\) "
-                                               r"[0-9]+ s\)\. Run again .* With GMP-ECM \(RANKBOUND_ECM or ecm on PATH\)")
+                                               r"[0-9]+ s\)\. PARI's factor\(\) starts over on each run, so a longer --ecm-hours .* install GMP-ECM")
 
 
 @unittest.skipUnless(factor.find_ecm(), 'GMP-ECM not installed (ecm on PATH or RANKBOUND_ECM)')
@@ -195,7 +222,7 @@ class TestGmpEcm(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'factor.json')
             self.assertEqual(factor.split(path, [P20 * P40], hours=0.05, log=print), [P20, P40])
-            r = json.load(open(path))['numbers'][str(P20 * P40)]
+            r = read_json(path)['numbers'][str(P20 * P40)]
             self.assertEqual((r['status'], r['found'][0]['factor']), ('split', str(P20)))
             with self.assertRaises(FactorisationNeeded) as e:
                 factor.split(os.path.join(d, 'hard.json'), [HARD], hours=5 / 3600, log=print)
@@ -229,7 +256,7 @@ class TestCurve(unittest.TestCase):
             N = run_gp('print(ellglobalred(ellinit([%d, %d]))[1]);' % tuple(E15)).strip()
             self.assertEqual(res.conductor, N)
             self.assertIn('factor', res.cost)
-            st = json.load(open(os.path.join(res.workdir, 'factor.json')))
+            st = read_json(os.path.join(res.workdir, 'factor.json'))
             self.assertEqual(st['numbers'][str(C15)]['status'], 'split')
             with open(os.path.join(res.workdir, 'curve.json')) as f:
                 self.assertEqual(json.load(f)['bad_primes'], ['2', '11', '17331101', '35497001'])
@@ -238,6 +265,17 @@ class TestCurve(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(res0.workdir, 'factor.json')))
             for bad in (-1, float('nan'), float('inf'), True, '1'):
                 self.assertRaisesRegex(ValueError, '^ecm_hours must be a number >= 0.$', rankbound, E15, ecm_hours=bad)
+
+    def test_bad_composites(self):
+        """Composites 0, 1, -15 or one not dividing the discriminant are refused with a ValueError before any
+        factoring."""
+        from rankbound import Job
+        with tempfile.TemporaryDirectory() as d:
+            for c, msg in (('0', 'is not an integer above 1'), ('1', 'is not an integer above 1'),
+                           ('-15', 'is not an integer above 1'), ('15', 'does not divide the discriminant')):
+                cur = field.Curve(name='c', ainvs=[str(x) for x in E15], bad_primes=['2', '11'], composites=[c])
+                self.assertRaisesRegex(ValueError, '^The composite %s %s.$' % (c, msg), Job(os.path.join(d, c)).prepare, cur)
+                self.assertFalse(os.path.exists(os.path.join(d, c, 'factor.json')))
 
     def test_list(self):
         """A curve list's composites go to the factor step; with --ecm-hours 0 the curve is refused as in 1.0."""

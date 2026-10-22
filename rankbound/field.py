@@ -246,7 +246,7 @@ def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp', factor_second
     if bad_primes is not None:
         bad_primes = _bad_primes(bad_primes)
         body = 'addprimes([%s]);\n' % ','.join(bad_primes) + body
-    out = run_gp(body, seconds=7200 + int(factor_seconds) * 100, gp=gp)
+    out = run_gp(body, seconds=7200, gp=gp)
     t = next(l.split('\t') for l in out.splitlines() if l.startswith('E2'))
     if t[1].strip() != '1':
         raise NotApplicable(NOT_APPLICABLE)
