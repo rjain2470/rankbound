@@ -190,11 +190,12 @@ folder (default `./rankbound_work`); and `<certificate>` is a `.cert.json` file 
 
 `rankbound <command> --help` lists every option. One can also input a list of curves of the form
 `{"curves": [{"id": 1, "ainvs": [...], "bad_primes": [...]}, ...]}`, where `bad_primes` optionally lists the primes
-dividing the discriminant. If `bad_primes` are not provided, `rankbound` automatically factors the discriminant using
+dividing the discriminant. If `bad_primes` are not provided, `rankbound` automatically factors the discriminant of each curve using
 trial division and ECM. If the discriminant is too large to be factored in `--ecm-hours` (set to 1 hour by default),
 the curve is skipped.
 
-From Python:
+One can also run `rankbound` in a Python environment. For example, the following block computes an upper bound on
+the rank of the elliptic curve $y^2 + y = x^3 - x^2 - 929x - 10595$ and checks its certificate:
 
 ```python
 from rankbound import rankbound
