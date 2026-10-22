@@ -182,6 +182,9 @@ class TestFakeECM(unittest.TestCase):
     def test_cli_resume(self):
         """`rankbound estimate` on E15 with GMP-ECM that finds nothing gives up (exit 1, the message); run again
         with a factor in reach, it continues from factor.json and finishes."""
+        job = os.environ.pop('SLURM_JOB_ID', None)      # no time limit from a Slurm job
+        if job is not None:
+            self.addCleanup(os.environ.__setitem__, 'SLURM_JOB_ID', job)
         os.environ.update(RANKBOUND_ECM=self.ecm, FAKE_ECM_SPC='0.05')
         cmd = ['estimate', ','.join(map(str, E15)), '--dir', os.path.join(self.tmp, 'cli'), '--ecm-hours']
         with self.assertLogs('rankbound', 'INFO') as lg, self.assertRaises(SystemExit) as e:
