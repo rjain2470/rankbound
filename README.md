@@ -1,6 +1,6 @@
 # rankbound
 
-A package for computing upper bounds on ranks of elliptic curves $E$ over ℚ, certified by an independent
+A package for computing upper bounds on the Mordell-Weil ranks of elliptic curves $E$ over ℚ, certified by an independent
 check in PARI/GP.
 
 Following \[[KSW19](#ksw19), [BDF08](#bdf08)\], the bound depends on the GRH for the Dedekind zeta functions of finitely
