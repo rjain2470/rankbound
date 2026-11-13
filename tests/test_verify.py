@@ -252,7 +252,8 @@ class TestBreak(unittest.TestCase):
         self.assertIn('not BSD', v['hypothesis'])
         # the JSON line is the record of a verification: the provenance (no host) and every check with its info
         self.assertEqual(list(v), ['verdict', 'reason', 'certificate', 'sha256', 'name', 'curve', 'rank_upper_bound',
-                                   'rank_lower_bound', 'r_proved', 'rank', 'G', 'u', 'n', 'w', 'hypothesis', 'statement',
+                                   'rank_lower_bound', 'r_proved', 'rank', 'G', 'u', 'n', 'w', 'GRH', 'method',
+                                   'torsion', 'hypothesis', 'statement',
                                    'checks', 'verifier', 'deploy', 'gp', 'date', 'seconds'])
         self.assertRegex(v['date'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d{4}$')
         self.assertNotEqual(v['gp'], '?')

@@ -1,17 +1,18 @@
-"""rankbound: an upper bound on rank E(Q) under GRH, with a certificate.
+"""rankbound: an upper bound on rank E(Q), with a certificate: under GRH if E(Q)[2] = 0, unconditionally if not.
 
     from rankbound import rankbound
     res = rankbound([0, -1, 1, -929, -10595])      # 571a1: res.rank_bound == 2, res.verified
     rankbound([0, -1, 1, -929, -10595], relations=res.certificate)     # the same bound from those relations alone
     rankbound([0, 0, 1, -1, 0], points=[(0, 0)])   # 37a1: rank >= 1 proved (r_proved), rank = 1 (proved_equal)
+    rankbound([0, 0, 0, -25, 0], points=[(-4, 6)])  # E(Q)[2] != 0: rank = 1, unconditionally (res.grh False)
 
-The method and its hypothesis are described in the README.  The subpackage rankbound.verify checks a certificate
+The methods and their hypotheses are described in the README.  The subpackage rankbound.verify checks a certificate
 and imports nothing from the rest of rankbound; the prover's modules load only when used."""
 import json, os
 from dataclasses import dataclass, field as _field
 from typing import Dict, List, Optional
 
-__version__ = '1.1.0'
+__version__ = '2.0.0'
 
 
 # The errors come first: the submodules import them.
@@ -20,7 +21,7 @@ class RankboundError(Exception):
 
 
 class NotApplicable(RankboundError):
-    """The curve has a rational point of order 2."""
+    """The curve has a rational point of order 2, and the class group method was asked for (Job)."""
 
 
 class FactorisationNeeded(RankboundError):
@@ -79,27 +80,31 @@ def __getattr__(name):
 class Result:
     name: str
     minimal_model: List[str]
-    rank_bound: int                 # S: rank E(Q) <= S under GRH
+    rank_bound: int                 # S: rank E(Q) <= S (under GRH if grh)
     G: Optional[int]                # dim Cl(K)[2] <= G; None (to w) if 'known'
     u: Optional[int]
     n: Optional[int]
     w: Optional[int]
-    selmer_bound: Optional[int]     # dim Sel_2(E) <= G + u + n
+    selmer_bound: Optional[int]     # dim Sel_2(E) <= G + u + n; None for a 2-descent (B + t bounds r + t, not Sel_2)
     rank_lower_bound: Optional[int] # r, if given
     r_proved: bool                  # rank E(Q) >= r is proved by the certificate
-    proved_equal: bool              # rank E(Q) = S is proved, under GRH
-    outcome: str                    # 'goal', 'plateau', 'relations' or 'known'
+    proved_equal: bool              # rank E(Q) = S is proved (under GRH if grh)
+    outcome: str                    # 'goal', 'plateau', 'relations', 'known' or 'descent'
     statement: str
     certificate: str                # the certificate file
     verified: Optional[bool]        # None if not verified here
     cost: Dict[str, Optional[float]] = _field(default_factory=dict)   # seconds per stage
     workdir: str = ''
     conductor: Optional[str] = None # N, if computed here
+    torsion: Optional[List[int]] = None     # E(Q)_tors as from elltors, if known
+    grh: bool = True                # whether rank_bound assumes GRH
+    method: str = 'class group'     # or '2-isogeny descent' (E(Q)[2] != 0)
 
 
 def rankbound(E, *, relations=None, r=None, points=None, bad_primes=None, sieve=None, workdir=None, cores=1,
               mem_gb=1.0, max_hours=None, verify=True, name=None, compute=False, ecm_hours=1.0):
-    """Return a certified bound rank E(Q) <= S under GRH, as a Result.
+    """Return a certified bound rank E(Q) <= S, as a Result: under GRH by the class group method if E(Q)[2] = 0,
+    unconditionally by 2-isogeny descent if not (then relations are refused and the sieve options unused).
 
     E is [a1, a2, a3, a4, a6] or [a4, a6], on any model.  The keyword arguments are the options of `rankbound bound`
     (README, Usage); calling again with the same workdir resumes.  Without bad_primes, what trial division leaves
@@ -133,13 +138,21 @@ def rankbound(E, *, relations=None, r=None, points=None, bad_primes=None, sieve=
         res = known_result(field.minimal_model(*a), ','.join(map(str, a[0])))
         if res is not None:
             return res
-    c = E if isinstance(E, field.Curve) else field.from_ainvs(E, bad_primes=bad_primes, r=r, name=name,
-                                                              factor_seconds=0 if ecm_hours else 600,
-                                                              composites=bool(ecm_hours))
+    c = field.classified(E if isinstance(E, field.Curve) else field.from_ainvs(
+        E, bad_primes=bad_primes, r=r, name=name, factor_seconds=0 if ecm_hours else 600, composites=bool(ecm_hours)))
     if points is not None:
         c = field.with_points(c, points, r)
-    given = None if relations is None else linalg.relation_input(relations)
     key = c.name + ('' if c.r is None else '_r%d' % c.r + ('p' if c.proof else ''))   # a state keeps its r and proof
+    if c.two_torsion():
+        if relations is not None:
+            raise ValueError('This curve has a rational point of order 2: its bound comes from a 2-isogeny descent, '
+                             'not from relations.')
+        from . import two_descent
+        from .rules import earlier
+        D = two_descent.Descent(workdir or os.path.join('rankbound_work', key))
+        return two_descent.result(D.run(c, cores=cores, mem_gb=mem_gb, verify=verify, ecm_hours=ecm_hours,
+                                        until=earlier(None, max_hours)), D.dir)
+    given = None if relations is None else linalg.relation_input(relations)
     J = run.Job(workdir or os.path.join('rankbound_work', key + ('_rel' + given.digest[:8] + ('_sieve' if sieve else '')
                                                              if given else '')))
     res = J.run(c, cores=cores, mem_gb=mem_gb, max_hours=max_hours, verify=verify, relations=given, sieve=sieve,
@@ -153,7 +166,8 @@ def rankbound(E, *, relations=None, r=None, points=None, bad_primes=None, sieve=
                   u=F['u'], n=F['n'], w=F['w'], selmer_bound=res['G'] + F['u'] + F['n'],
                   rank_lower_bound=r, r_proved=r_proved, proved_equal=S == 0 or (r_proved and S == r),
                   outcome=res['outcome'], statement=res['statement'], certificate=res['certificate'],
-                  verified=res['verified'], cost=res.get('cost', {}), workdir=J.dir, conductor=field.conductor(F))
+                  verified=res['verified'], cost=res.get('cost', {}), workdir=J.dir, conductor=field.conductor(F),
+                  torsion=F.get('torsion'))
 
 
 def known_result(mm, curve=''):
@@ -167,10 +181,14 @@ def known_result(mm, curve=''):
         logging.getLogger('rankbound').info(l)
     S, r, eq = int(row[known.UB]), row[known.LB], row[known.EQ]
     r_proved = eq in ('yes', 'no')
+    tor = row.get(known.TOR)
     return Result(name=row['name'], minimal_model=list(mm), rank_bound=S, G=None, u=None, n=None, w=None,
                   selmer_bound=None, rank_lower_bound=int(r) if r else None, r_proved=r_proved,
                   proved_equal=S == 0 or (r_proved and r != '' and S == int(r)), outcome='known',
-                  statement=known.statement(row), certificate=row['file'], verified=None, cost={}, workdir='')
+                  statement=known.statement(row), certificate=row['file'], verified=None, cost={}, workdir='',
+                  torsion=[int(x) for x in tor.strip('[]').split(',') if x.strip()] if tor else None,
+                  grh=row.get(known.GRH, 'yes') != 'no',
+                  method='2-isogeny descent' if row.get(known.GRH) == 'no' else 'class group')
 
 
 __all__ = ['rankbound', 'Job', 'Result', 'Curve', 'RankboundError', 'NotApplicable', 'FactorisationNeeded', 'Locked',

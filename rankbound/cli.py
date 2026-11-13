@@ -1,4 +1,5 @@
-"""rankbound: an upper bound on the rank of an elliptic curve over Q, under GRH, with a checkable certificate.
+"""rankbound: an upper bound on the rank of an elliptic curve over Q, with a checkable certificate: under GRH if
+E(Q)[2] = 0, unconditionally (2-isogeny descent) if not.
 
   rankbound bound CURVE                     e.g. rankbound bound 0,1,1,-2,0
   rankbound bound --curves FILE             the curves of a JSON curve list
@@ -14,7 +15,7 @@ CURVE is a1,a2,a3,a4,a6 or a4,a6. Run the same command again to resume.
 Exit status: 0 success, 1 failure, 2 usage error."""
 # The prover's command line; rankbound/__main__.py sends `rankbound verify` to the verifier first.
 import argparse, glob, logging, math, os, re, sys
-from . import RankboundError, Stopped, field, gp_message, known, linalg
+from . import RankboundError, Stopped, field, gp_message, known, linalg, two_descent
 from .rules import deadline
 from .run import STATUS_COLUMNS, VERDICT, Job
 
@@ -101,7 +102,10 @@ def cmd_bound(a):
     try:
         rels = linalg.relation_input(a.relations)
         J = Job(folder(a, cs[0], rels))
-        cs[0] = field.factored(cs[0], a.ecm_hours, J.dir)
+        cs[0] = field.classified(field.factored(cs[0], a.ecm_hours, J.dir))
+        if cs[0].two_torsion():
+            raise SystemExit('This curve has a rational point of order 2: its bound comes from a 2-isogeny descent, '
+                             'not from relations. Run it without --relations.')
         return report(J.run(cs[0], cores=a.cores, mem_gb=a.mem, until=a.until,
                                                       relations=rels, sieve=a.keep_sieving, ecm_hours=a.ecm_hours))
     except Stopped:
@@ -123,8 +127,9 @@ def report(r):
     """Log the RESULT line; return 1 if the certificate failed its verification, else 0."""
     S, lb = r['rank_bound'], r.get('rank_lower_bound')
     equal = S == 0 or (r.get('r_proved') and S == lb)
-    log('RESULT %s: rank %s %d under GRH, %s (%.2f core-h)' % (r['name'], '=' if equal else '<=', S,
-                                                              VERDICT[r['verified']], r['sieve_core_hours']))
+    log('RESULT %s: rank %s %d %s, %s (%.2f core-h)' % (r['name'], '=' if equal else '<=', S,
+                                                       'unconditionally' if r.get('GRH') == 'no' else 'under GRH',
+                                                       VERDICT[r['verified']], r['sieve_core_hours']))
     return int(r['verified'] is False)
 
 
@@ -134,15 +139,21 @@ def first_line(e):
 
 
 def cmd_estimate(a, run=False):
-    """estimate: prepare and tune every curve; with run (bound), then run them, cheapest first.  Of several curves,
-    one that fails is skipped with its reason.  Returns 1 if a curve was skipped or failed, else 0."""
+    """estimate: prepare and tune every curve; with run (bound), then run them, cheapest first.  A curve with 2-torsion
+    needs no sieve (two_descent; cost 0).  Of several curves, one that fails is skipped with its reason.  Returns 1 if
+    a curve was skipped or failed, else 0."""
     cs = curves(a)
     until = a.until if run else deadline()      # estimate: factoring stops before a Slurm job's end too
     plan, failed = [], []
     for c in cs:
         J = Job(folder(a, c))
         try:
-            c = field.factored(c, a.ecm_hours, J.dir)      # a list curve without bad_primes
+            c = field.classified(field.factored(c, a.ecm_hours, J.dir))    # a list curve without bad_primes
+            if c.two_torsion():
+                J = two_descent.Descent(J.dir)
+                if not run:
+                    log('%s: E(Q)[2] != 0, so a 2-isogeny descent bounds the rank, unconditionally, in seconds.' % c.name)
+                plan.append((0, J, c)); continue
             if os.path.exists(os.path.join(J.dir, 'result.json')):
                 plan.append((0, J, c)); continue
             J.prepare(c, ecm_hours=a.ecm_hours, cores=a.cores, mem_gb=a.mem, until=until)
@@ -206,8 +217,9 @@ def cmd_status(a):
     if not os.path.isdir(a.dir):
         raise SystemExit('%s is not a folder.' % a.dir)
     print('\t'.join(STATUS_COLUMNS))
-    for st in sorted(glob.glob(os.path.join(a.dir, '*', 'field.json'))):
-        s = Job(os.path.dirname(st)).status()
+    for d in sorted({os.path.dirname(p) for f in ('field.json', 'curve.json') for p in glob.glob(os.path.join(a.dir, '*', f))}):
+        # a folder of the class group method has field.json before curve.json; a 2-descent's never has one
+        s = (Job(d) if os.path.exists(os.path.join(d, 'field.json')) else two_descent.Descent(d)).status()
         print('\t'.join(str(s[c]) for c in STATUS_COLUMNS))
 
 

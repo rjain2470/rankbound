@@ -9,7 +9,7 @@ import array, collections, datetime, gzip, hashlib, json, logging, lzma, math, o
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import Optional
-from .verify import FORMAT, MAX_DIGITS, parity_bound, run_gp, statement
+from .verify import FORMAT, FORMATS, MAX_DIGITS, parity_bound, run_gp, statement
 from . import RankboundError, field as fld, sieve, write_json
 
 ENGINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'f2elim')     # built by `make build`
@@ -120,7 +120,7 @@ def read_relations(path):
         with open_file(path) as f:
             if path.endswith(('.cert.json', '.cert.json.gz', '.cert.json.xz')):
                 c = json.load(f)
-                lines = c.get('relations') if isinstance(c, dict) and c.get('format') == FORMAT else None
+                lines = c.get('relations') if isinstance(c, dict) and c.get('format') in FORMATS else None
                 if not isinstance(lines, list):
                     raise ValueError('%s is not a certificate with relations.' % path)
             else:
@@ -489,9 +489,10 @@ def certificate(state, M, res, path, proof, source, gp='gp'):
     idx = {i: k for k, i in enumerate(need)}
     G = res.bound
     S, st = statement(G, F, r, None if proof else source)
+    tor = F.get('torsion')
     c = {'name': F['name'],
          'curve': {'ainvs': ainvs, 'minimal_model': F['minimal_model'], 'bad_primes': F['bad_primes']},
-         'statement': st}
+         'statement': st, 'torsion': fld.torsion(ainvs, gp) if tor is None else tor, 'GRH': 'yes'}
     if rl:
         c['rank_lower_bound'] = rl
     c.update(field={'poly': [str(x) for x in F['poly']], 'dK': F['dK'], 'GB': F['GB'], 'ns': F['ns']},
@@ -529,8 +530,9 @@ def read_head(path):
             buf += chunk
         f.seek(0, 2)
         f.seek(max(0, f.tell() - 200))
-        if not f.read().rstrip().endswith(('"format": %s\n}' % json.dumps(FORMAT)).encode()):
-            raise ValueError('%s: its last line is not the format %s' % (path, FORMAT))
+        end = f.read().rstrip()
+        if not any(end.endswith(('"format": %s\n}' % json.dumps(x)).encode()) for x in FORMATS):
+            raise ValueError('%s: its last line is not the format %s' % (path, ' or '.join(FORMATS)))
     return json.loads(buf[:k].decode() + '\n}'), k
 
 

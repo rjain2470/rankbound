@@ -36,8 +36,9 @@ class TestEndToEnd(unittest.TestCase):
 
     def test_api(self):
         """rankbound() on any model: rank_bound 2 (rank 0, Sha[2] = (Z/2)^2), verified; a second call resumes from
-        result.json; NotApplicable when E(Q)[2] != 0; the default workdir is ./rankbound_work/NAME, NAME the minimal
-        model's a-invariants."""
+        result.json; the default workdir is ./rankbound_work/NAME, NAME the minimal model's a-invariants.  A curve
+        with E(Q)[2] != 0 goes to the 2-descent (rank 0 unconditionally for y^2 = x^3 - x); the class group method
+        (Job) refuses it with NotApplicable."""
         res = self.res
         self.assertEqual((res.rank_bound, res.G, res.u, res.n, res.selmer_bound), (2, 1, 1, 0, 2))
         self.assertTrue(res.verified); self.assertEqual(res.outcome, 'plateau')
@@ -48,8 +49,14 @@ class TestEndToEnd(unittest.TestCase):
         t = time.time()
         self.assertEqual(rankbound(E571, workdir=res.workdir), res)
         self.assertLess(time.time() - t, 15)
+        res = rankbound([0, 0, 0, -1, 0], workdir=os.path.join(self.tmp, 'e2'), compute=True)    # y^2 = x^3 - x
+        self.assertEqual((res.rank_bound, res.grh, res.method, res.torsion, res.verified, res.proved_equal, res.outcome),
+                         (0, False, '2-isogeny descent', [2, 2], True, True, 'descent'))
+        res = rankbound([0, 0, 0, -1, 0], workdir=os.path.join(self.tmp, 'e3'))     # listed in certificates.tsv
+        self.assertEqual((res.rank_bound, res.grh, res.method, res.torsion, res.proved_equal, res.outcome),
+                         (0, False, '2-isogeny descent', [2, 2], True, 'known'))
         with self.assertRaises(NotApplicable):
-            rankbound([0, 0, 0, -1, 0])                # y^2 = x^3 - x: full 2-torsion
+            Job(os.path.join(self.tmp, 'e2job')).prepare(field.from_ainvs([0, 0, 0, -1, 0]))
 
     def test_certificate(self):
         """A verified certificate NAME.cert.json, with its keys in order; another format, a changed relation, pivot
@@ -61,8 +68,9 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual((v['verdict'], v['certificate'], v['rank_upper_bound']), ('accepted', cert, 2))
         self.assertTrue(os.path.getsize(os.path.join(self.res.workdir, 'verify.log')))
         c0 = vf.load(cert)
-        self.assertEqual(list(c0), ['name', 'curve', 'statement', 'field', 'local', 'claims', 'created', 'relations',
-                                    'ops', 'pivots', 'format'])
+        self.assertEqual(list(c0), ['name', 'curve', 'statement', 'torsion', 'GRH', 'field', 'local', 'claims', 'created',
+                                    'relations', 'ops', 'pivots', 'format'])
+        self.assertEqual((c0['torsion'], c0['GRH'], c0['format']), ([], 'yes', 'rankbound-selmer-certificate-3'))
         for what in ('format', 'rel', 'ops', 'claim'):
             c = json.loads(json.dumps(c0))
             if what == 'format':

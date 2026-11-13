@@ -165,6 +165,9 @@ vfield(ai, P, mm, f, dKc, GBc, nsc, uc, nc, wc) =
   K;
 }
 
+\\ the torsion structure of E(Q) (elltors) is tor
+vtors(ai, tor) = my(t = elltors(ellinit(ai))[2]); vchk("torsion", t == tor, Str("E(Q)_tors = ", t));
+
 \\ rank lower bound: r points, F2-independent by their 2-signatures at primes p with #E(F_p) = 2 mod 4
 vrank(ai, r, PTS, PR) =
 {

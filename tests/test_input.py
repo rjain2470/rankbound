@@ -489,12 +489,10 @@ class TestOutsider(unittest.TestCase):
         its verification."""
         from rankbound import cli
         with tempfile.TemporaryDirectory() as d:
-            lst = self.write(d, 'list.json', {'curves': [TestGpInput.GOOD, dict(TestGpInput.GOOD, id=2, ainvs=[0, 0, 0, -1, 0],
-                                                                                 bad_primes=['2'])]})
+            lst = self.write(d, 'list.json', {'curves': [TestGpInput.GOOD, dict(TestGpInput.GOOD, id=2, bad_primes=['3'])]})
             with self.assertLogs('rankbound', 'INFO') as out:
                 self.assertEqual(self.main(['estimate', '--dir', os.path.join(d, 'run'), '--curves', lst]), 1)
-            self.assertIn('INFO:rankbound:Skipped curve2. This curve has a rational point of order 2, so the method does '
-                          'not apply (use a 2-isogeny descent, e.g. mwrank).', out.output)
+            self.assertIn('INFO:rankbound:Skipped curve2. The bad prime 3 does not divide the discriminant.', out.output)
             self.assertTrue(any(l.startswith('INFO:rankbound:1 curves; estimated cost ') and l.endswith(' Skipped: curve2.')
                                 for l in out.output), out.output)
         res = {'name': 'x', 'outcome': 'goal', 'G': 0, 'rank_bound': 2, 'sieve_core_hours': 0.014,
@@ -505,6 +503,9 @@ class TestOutsider(unittest.TestCase):
         self.assertEqual(out.output, ['INFO:rankbound:RESULT x: rank = 2 under GRH, certificate verified (0.01 core-h)',
                                       'INFO:rankbound:RESULT x: rank <= 2 under GRH, certificate NOT verified (0.01 core-h)',
                                       'INFO:rankbound:RESULT x: rank = 2 under GRH, certificate not verified (0.01 core-h)'])
+        with self.assertLogs('rankbound', 'INFO') as out:          # a 2-descent's result
+            self.assertEqual(cli.report(dict(res, verified=True, r_proved=True, GRH='no', sieve_core_hours=0.0)), 0)
+        self.assertEqual(out.output, ['INFO:rankbound:RESULT x: rank = 2 unconditionally, certificate verified (0.00 core-h)'])
 
 
 class TestKnown(unittest.TestCase):
@@ -512,7 +513,7 @@ class TestKnown(unittest.TestCase):
     'known'), unless --compute (compute=True); points, relations or a curve list always compute."""
     I0 = '0,-1,1,0,0'                                 # ICARM #0 (11a3), its reduced minimal model
     SHORT = [0, 0, 0, -432, 8208]                     # a short model of it: y^2 = x^3 - 27 c4 x - 54 c6
-    HEAD = ['name', 'icarm_id', 'file', 'rank lower bound', 'rank upper bound under GRH', 'rank = r?', 'sha256',
+    HEAD = ['name', 'icarm_id', 'file', 'rank lower bound', 'rank upper bound', 'rank = r?', 'sha256',
             'verified', 'minimal model']
 
     def index(self, d, rows):

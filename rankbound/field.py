@@ -123,18 +123,26 @@ class Curve:
     source: str = 'cited'                     # where r is from, without a proof
     minimal_model: Optional[List[str]] = None
     composites: List[str] = field(default_factory=list)
+    torsion: Optional[List[int]] = None       # E(Q)_tors as from elltors, e.g. [2, 2]; None: not computed yet
 
     def to_dict(self):
         d = {'name': self.name, 'ainvs': self.ainvs, 'bad_primes': self.bad_primes, 'composites': self.composites,
              'r': self.r, 'proof': self.proof, 'source': self.source}
         if self.minimal_model is not None:
             d['minimal_model'] = self.minimal_model
+        if self.torsion is not None:
+            d['torsion'] = self.torsion
         return d
 
     @classmethod
     def from_dict(cls, d):
         return cls(name=d['name'], ainvs=d['ainvs'], bad_primes=d['bad_primes'], r=d.get('r'), proof=d.get('proof'),
-                   source=d.get('source', 'cited'), minimal_model=d.get('minimal_model'), composites=d.get('composites', []))
+                   source=d.get('source', 'cited'), minimal_model=d.get('minimal_model'), composites=d.get('composites', []),
+                   torsion=d.get('torsion'))
+
+    def two_torsion(self):
+        """Return whether E(Q)[2] != 0 (the 2-descent path), from the torsion; None if it is not known."""
+        return None if self.torsion is None else any(n % 2 == 0 for n in self.torsion)
 
     def key(self):
         """Return the default name of the curve."""
@@ -163,13 +171,16 @@ def checked(c):
     check_proof(c.proof)
     if not isinstance(c.source, str):
         raise ValueError('source must be a string.')
+    if c.torsion is not None and not (isinstance(c.torsion, list) and len(c.torsion) <= 2
+                                      and all(type(n) is int and n > 0 for n in c.torsion)):
+        raise ValueError('torsion must be a list of at most two positive integers, as from elltors.')
     return c
 
 
-# The minimal model, whether E(Q)[2] = 0, and the bad primes: trial division to 10^6, cheap splits of what is left
+# The minimal model, E(Q)_tors (elltors), and the bad primes: trial division to 10^6, cheap splits of what is left
 # (perfect powers, the gcd with c4, which the primes of additive reduction divide), then factor() for at most S seconds
 # per cofactor (none with S = 0: the composites go to the ECM step).
-CURVE_GP = '''{ my(E = ellminimalmodel(ellinit([%s])), T = x^3 + E.b2*x^2 + 8*E.b4*x + 16*E.b6, P = List(), C = List(), G,
+CURVE_GP = '''{ my(E = ellminimalmodel(ellinit([%s])), P = List(), C = List(), G,
      J = (v -> strjoin(apply(z -> Str(z), Vec(v)), ",")), S = %d);
   if(%d, my(F = factor(abs(E.disc), 10^6), todo = List());
     for(i = 1, #F~, my(p = F[i, 1]); if(p < 10^6 || ispseudoprime(p), listput(P, p), listput(todo, p)));
@@ -181,7 +192,7 @@ CURVE_GP = '''{ my(E = ellminimalmodel(ellinit([%s])), T = x^3 + E.b2*x^2 + 8*E.
       G = if(S, iferr(alarm(S, factor(q)), e, 0), 0);
       if(type(G) != "t_MAT", listput(C, q); next);
       for(j = 1, #G~, if(ispseudoprime(G[j, 1]), listput(P, G[j, 1]), listput(C, G[j, 1])))));
-  print("E2\\t", polisirreducible(T), "\\t", J(E[1..5]), "\\t", J(Set(Vec(P))), "\\t", J(Set(Vec(C)))); }'''
+  print("E2\\t", J(elltors(E)[2]), "\\t", J(E[1..5]), "\\t", J(Set(Vec(P))), "\\t", J(Set(Vec(C)))); }'''
 
 
 def seq(v, what):
@@ -230,14 +241,28 @@ def minimal_model(ainvs, bad_primes=None, gp='gp'):
     return next(l.split('\t')[1].strip() for l in out.splitlines() if l.startswith('MM')).split(',')
 
 
-NOT_APPLICABLE = ('This curve has a rational point of order 2, so the method does not apply (use a 2-isogeny descent, '
-                  'e.g. mwrank).')
+NOT_APPLICABLE = ('This curve has a rational point of order 2, so the class group method does not apply (rankbound() '
+                  'and `rankbound bound` use a 2-isogeny descent for it).')
+
+
+def torsion(ainvs, gp='gp'):
+    """Return the structure of E(Q)_tors of the a-invariants ainvs (any model), as from elltors: e.g. [2, 2]."""
+    out = run_gp('print("T\\t", strjoin(apply(z -> Str(z), elltors(ellinit([%s]))[2]), ","));'
+                 % ','.join(map(str, _ainvs5(ainvs))), seconds=600, gp=gp)
+    t = next(l.split('\t')[1].strip() for l in out.splitlines() if l.startswith('T'))
+    return [int(x) for x in t.split(',') if x]
+
+
+def classified(curve, gp='gp'):
+    """Return curve with its torsion, computed if it is not known."""
+    return curve if curve.torsion is not None else dataclasses.replace(curve, torsion=torsion(curve.ainvs, gp))
 
 
 def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp', factor_seconds=600, composites=False):
     """Return the Curve of ainvs, on any model.  Without bad_primes the discriminant is factored, by PARI for at most
     factor_seconds per cofactor; a composite left raises FactorisationNeeded or, with composites, is returned in
-    Curve.composites, for Job.prepare's ECM step.  Raises NotApplicable if E(Q)[2] != 0."""
+    Curve.composites, for Job.prepare's ECM step.  The torsion is recorded (Curve.torsion): E(Q)[2] != 0 takes
+    the 2-descent path."""
     a = _ainvs5(ainvs)
     r = r_value(r)
     if name is not None:
@@ -248,8 +273,6 @@ def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp', factor_second
         body = 'addprimes([%s]);\n' % ','.join(bad_primes) + body
     out = run_gp(body, seconds=7200, gp=gp)
     t = next(l.split('\t') for l in out.splitlines() if l.startswith('E2'))
-    if t[1].strip() != '1':
-        raise NotApplicable(NOT_APPLICABLE)
     left = []
     if bad_primes is None:
         left = [x for x in t[4].strip().split(',') if x]
@@ -259,7 +282,7 @@ def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp', factor_second
         bad_primes = [x for x in t[3].strip().split(',') if x]
     mm = t[2].strip().split(',')
     return Curve(name=default_name(mm) if name is None else name, ainvs=[str(x) for x in a], bad_primes=[str(p) for p in bad_primes], r=r,
-                 minimal_model=mm, composites=left)
+                 minimal_model=mm, composites=left, torsion=[int(x) for x in t[1].strip().split(',') if x])
 
 
 def from_list(path, ids=None):
@@ -397,6 +420,7 @@ def compute(ainvs, bad_primes, gp='gp', seconds=7200):
         'bk_primes': [dict(zip(('p', 'reduction', 'v_disc', 'contribution'), z.split(':'))) for z in lst(sf['bk_primes'])],
         'w': int(sf['w']),
         'sign_disc': int(sf['signD']),
+        'torsion': [int(x) for x in lst(sf['torsion'])],
     }
     F['conductor'] = conductor(F)
     return F, small

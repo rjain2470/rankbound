@@ -3,7 +3,8 @@ computed or checked here; `rankbound verify` checks the certificate itself."""
 import os
 
 INDEX = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'certificates.tsv')
-LB, UB, EQ, MM = 'rank lower bound', 'rank upper bound under GRH', 'rank = r?', 'minimal model'    # its columns
+LB, UB, EQ, MM = 'rank lower bound', 'rank upper bound', 'rank = r?', 'minimal model'    # its columns
+TOR, GRH = 'torsion', 'GRH'         # E(Q)_tors as from elltors; whether the upper bound assumes GRH (yes or no)
 ORDER = {'yes': 0, 'no': 1, 'r cited': 2, 'no (r cited)': 3}      # among the rows of one curve, if it has several
 
 
@@ -27,11 +28,12 @@ def lookup(minimal_model, index=None):
 def statement(row):
     """Return what the row's certificate proves, in words."""
     S, r, eq = row[UB], row[LB], row[EQ]
+    h = 'unconditionally' if row.get(GRH) == 'no' else 'under GRH'
     if S == '0' or eq == 'yes':
-        return 'rank E(Q) = %s under GRH' % S
+        return 'rank E(Q) = %s %s' % (S, h)
     if eq == 'no':
-        return '%s <= rank E(Q) <= %s under GRH' % (r, S)
-    return 'rank E(Q) <= %s under GRH%s' % (S, ' (r = %s is cited, not proved in the certificate)' % r if r else '')
+        return '%s <= rank E(Q) <= %s %s' % (r, S, h)
+    return 'rank E(Q) <= %s %s%s' % (S, h, ' (r = %s is cited, not proved in the certificate)' % r if r else '')
 
 
 def lines(row, curve):

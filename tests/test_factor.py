@@ -296,19 +296,19 @@ class TestCurve(unittest.TestCase):
             self.assertIn('The discriminant is not fully factored.', r.stderr)
 
     def test_list_without_bad_primes(self):
-        """List curves without bad_primes are factored one by one, as a single curve is: E15 runs; y^2 = x^3 - x
-        (E(Q)[2] != 0) is skipped with its reason, and the exit status is 1.  A rerun takes E15's primes from its
-        field.json, without factoring again."""
+        """List curves without bad_primes are factored one by one, as a single curve is: E15 runs, and y^2 = x^3 - x
+        (E(Q)[2] != 0) goes to the 2-descent.  A rerun takes E15's primes from its field.json, without factoring
+        again."""
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'list.json')
             with open(path, 'w') as f:
                 json.dump({'curves': [{'id': 1, 'ainvs': E15}, {'id': 2, 'ainvs': [0, 0, 0, -1, 0]}]}, f)
             r = subprocess.run(CLI + ['estimate', '--dir', os.path.join(d, 'a'), '--curves', path],
                                env=dict(ENV, RANKBOUND_ECM='none'), capture_output=True, text=True, timeout=300)
-            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn('Conductor: 18 digits, 4 bad primes; root number +1.', r.stdout)
-            self.assertIn('Skipped curve2. This curve has a rational point of order 2', r.stdout)
-            self.assertRegex(r.stdout, r'1 curves; estimated cost [0-9.]+ core-hours in all\. Skipped: curve2\.')
+            self.assertIn('curve2: E(Q)[2] != 0, so a 2-isogeny descent bounds the rank, unconditionally', r.stdout)
+            self.assertRegex(r.stdout, r'2 curves; estimated cost [0-9.]+ core-hours in all\.\n')
             self.assertEqual(read_json(os.path.join(d, 'a', 'curve1', 'curve.json'))['bad_primes'],
                              ['2', '11', '17331101', '35497001'])
             with mock.patch.object(field, 'from_ainvs', side_effect=AssertionError('factored again')):

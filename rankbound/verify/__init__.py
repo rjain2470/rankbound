@@ -21,6 +21,8 @@ The certificate is one JSON file with these keys, in this order:
   name              e.g. icarm728
   curve             ainvs [a1,a2,a3,a4,a6], minimal_model, bad_primes (every prime of the discriminant)
   statement         the theorem proved, in words; the verifier rebuilds it and compares
+  torsion           the structure of E(Q)_tors as from PARI's elltors: [] or [n], n odd (not in format 2)
+  GRH               "yes": the bound assumes the GRH of (1) (not in format 2, which is read as "yes")
   rank_lower_bound  optional: r with points on ainvs and primes p with #E(F_p) = 2 mod 4 at which the points'
                     2-signatures have rank r; or r with a source, saying where r is from
   field             poly [c0,c1,c2,c3] with K = Q(alpha) and F(alpha, 1) = 0; dK; GB, the GRH bound; ns, the
@@ -32,12 +34,15 @@ The certificate is one JSON file with these keys, in this order:
                     multiplicity; or "f:p", the ideal (p)
   ops               pairs [dst, src], applied in order as row[dst] ^= row[src]; rows are indexed from 0
   pivots            row indices; dim V is the number of echelon pivots outside the large columns among these rows
-  format            "rankbound-selmer-certificate-2"
+  format            "rankbound-selmer-certificate-3" (or -2, without torsion and GRH)
+
+Curves with a rational point of order 2 have certificates of another format, checked by two_descent.py: an
+unconditional bound by 2-isogeny descent.
 
 What is checked.  verify.gp recomputes the number theory: the bad primes are prime (APRCL), the minimal model, the
 discriminant is the product of powers of the bad primes, E(Q)[2] = 0, the maximal order and d_K (nfcertify), the
 index form F (disc F = d_K and Q(alpha) = K), u, n, w, the BDF inequality at GB in exact interval arithmetic, ns,
-and the rank lower bound when points are given.  For every relation it checks that the given primes are prime and
+the torsion (format 3) and the rank lower bound when points are given.  For every relation it checks that the given primes are prime and
 multiply to |F(a, b)|, and recomputes the odd valuations with idealval.  This module replays the row operations and
 computes dim V with f2rank.c, which shares no code with the prover.
 
@@ -48,9 +53,10 @@ import array, hashlib, json, math, os, re, shutil, subprocess, tempfile, time
 from fractions import Fraction
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FORMAT = 'rankbound-selmer-certificate-2'
+FORMAT = 'rankbound-selmer-certificate-3'          # what the prover writes
+FORMATS = (FORMAT, 'rankbound-selmer-certificate-2')     # the class group certificates accepted
 F2RANK = os.path.join(HERE, 'f2rank')     # built by `make build`
-SOURCES = ('__init__.py', '__main__.py', 'verify.gp', 'f2rank.c')     # the files of verifier_hash
+SOURCES = ('__init__.py', '__main__.py', 'verify.gp', 'f2rank.c', 'two_descent.py', 'two_descent.gp')   # verifier_hash
 
 
 # ---------- the statement (also used by the prover)
@@ -154,8 +160,9 @@ def _gpvec(line):
     return '[%s,%s,[%s]]' % (m[1], m[2], ','.join(str(int(h, 16)) for h in m[3].split(',') if h))
 
 
-KEYS = ('name', 'curve', 'statement', 'rank_lower_bound', 'field', 'local', 'claims', 'created', 'relations', 'ops',
-        'pivots', 'format')          # rank_lower_bound may be absent
+KEYS = ('name', 'curve', 'statement', 'torsion', 'GRH', 'rank_lower_bound', 'field', 'local', 'claims', 'created',
+        'relations', 'ops', 'pivots', 'format')          # rank_lower_bound may be absent; format 2: no torsion, GRH
+NEW3 = ('torsion', 'GRH')
 PARTS = {'curve': ('ainvs', 'minimal_model', 'bad_primes'), 'field': ('poly', 'dK', 'GB', 'ns'), 'local': ('u', 'n', 'w'),
          'claims': ('G', 'dimV', 'S')}
 NAME = re.compile(r'[A-Za-z0-9_.-]{1,64}')
@@ -172,12 +179,16 @@ def _keys(d, want, what):
 def _clean(c):
     """Check the form of the certificate c and return its relations as gp vectors; raise ValueError if it is
     malformed."""
-    _keys(c, [k for k in KEYS if k != 'rank_lower_bound' or k in c], 'certificate')
+    old = c.get('format') == FORMATS[1]
+    _keys(c, [k for k in KEYS if (k != 'rank_lower_bound' or k in c) and not (old and k in NEW3)], 'certificate')
     for k, ks in PARTS.items():
         _keys(c[k], ks, k)
-    for k in ('name', 'statement', 'created'):
+    for k in ('name', 'statement', 'created') + (() if old else ('GRH',)):
         if not isinstance(c[k], str):
             raise ValueError('"%s" must be a string' % k)
+    if not old:
+        if len(_list(c['torsion'])) > 1 or not all(_int(x) > 0 and x % 2 for x in c['torsion']):
+            raise ValueError('"torsion" must be [] or [n]: E(Q)[2] = 0')
     if not NAME.fullmatch(c['name']):
         raise ValueError('the name %.80r is not allowed' % c['name'])
     cur, fd, loc, cl = c['curve'], c['field'], c['local'], c['claims']
@@ -189,21 +200,8 @@ def _clean(c):
         for k in ks:
             _int(d[k])
     if 'rank_lower_bound' in c:
-        rl = c['rank_lower_bound']
-        if isinstance(rl, dict) and 'points' in rl:
-            _keys(rl, ('r', 'points', 'primes'), 'rank_lower_bound')
-            for pt in _list(rl['points']):
-                for x in _list(pt, 2):
-                    _str(x, RAT)
-            for p in _list(rl['primes']):
-                _int(p)
-        else:
-            _keys(rl, ('r', 'source'), 'rank_lower_bound')
-            src = rl['source']
-            if not (isinstance(src, str) and src.strip() and len(src) <= 200 and src.isprintable()):
-                raise ValueError('the source of r must be one line of at most 200 characters')
-        if _int(rl['r']) < 0:
-            raise ValueError('r is negative')
+        from .two_descent import lower_bound_form
+        lower_bound_form(c['rank_lower_bound'])
     for o in _list(c['ops']):
         for x in _list(o, 2):
             _int(x)
@@ -366,8 +364,9 @@ def load(path, max_bytes=None):
             raise ValueError('it is not UTF-8 text')
         except json.JSONDecodeError as e:
             raise ValueError('it is not valid JSON at line %d, column %d' % (e.lineno, e.colno))
-    if not isinstance(c, dict) or c.get('format') != FORMAT:
-        raise ValueError('its format is not %s' % FORMAT)
+    from .two_descent import FORMAT as TD
+    if not isinstance(c, dict) or c.get('format') not in FORMATS + (TD,):
+        raise ValueError('its format is not %s' % ', '.join(FORMATS + (TD,)))
     return c
 
 
@@ -532,17 +531,22 @@ def _verify1(cdir, cores, gp, quiet, log, curve, max_mb, max_seconds, t0):
     jobs = cores
     res = []
     ok = lambda name, cond, info='': res.append((name, bool(cond), info))
+    from . import two_descent as td
     try:
         c = load(cdir, None if max_mb is None else int(max_mb * 1e6))
-        rels = _clean(c)
+        descent = c['format'] == td.FORMAT
+        rels = td.clean(c) if descent else _clean(c)
     except (ValueError, KeyError, TypeError, AttributeError) as e:      # also UnicodeDecodeError, a ValueError
         res = [('format', False, str(e))]
         if not quiet:
             log('FAIL: ' + _reason(res, _name(cdir), curve)[1])
         return False, res, '', None
-    _limits(c)
+    td.limits(c) if descent else _limits(c)
     ok('format', True)
+    if descent:
+        return _verify_descent(c, res, ok, gp, quiet, log, curve, left, t0)
     cur, fd, loc, cl = c['curve'], c['field'], c['local'], c['claims']
+    old = c['format'] == FORMATS[1]
     rl = c.get('rank_lower_bound') or {}
     r = rl.get('r')
     pr = rl if 'points' in rl else None
@@ -557,6 +561,8 @@ def _verify1(cdir, cores, gp, quiet, log, curve, max_mb, max_seconds, t0):
         body = 'vfield([%s], [%s], [%s], %s, %s, %d, %d, %d, %d, %d);\n' % (
             ','.join(cur['ainvs']), ','.join(cur['bad_primes']), ','.join(cur['minimal_model']), f, fd['dK'], fd['GB'],
             fd['ns'], loc['u'], loc['n'], loc['w'])
+        if not old:
+            body += 'vtors([%s], [%s]);\n' % (','.join(cur['ainvs']), ','.join(map(str, c['torsion'])))
         if pr:
             body += 'vrank([%s], %d, [%s], [%s]);\n' % (','.join(cur['ainvs']), r,
                                                        ','.join('[%s,%s]' % tuple(p) for p in pr['points']), ','.join(map(str, pr['primes'])))
@@ -566,7 +572,9 @@ def _verify1(cdir, cores, gp, quiet, log, curve, max_mb, max_seconds, t0):
             if t[0] == 'CHK':
                 ok(t[1], t[2] == '1', t[3] if len(t) > 3 else '')
         printed = {x[0] for x in res}
-        for name in FIELD_CHECKS + (('rank_lower_bound',) if pr else ()):
+        if not old:
+            ok('GRH', c['GRH'] == 'yes', 'the bound assumes GRH')
+        for name in FIELD_CHECKS + (() if old else ('torsion',)) + (('rank_lower_bound',) if pr else ()):
             if name not in printed:
                 ok(name, False, 'not printed by gp')
         t1 = time.time()
@@ -590,8 +598,15 @@ def _verify1(cdir, cores, gp, quiet, log, curve, max_mb, max_seconds, t0):
     # A failed gp check rejects the certificate; any other error propagates, with no verdict.
     except Rejected as e:
         ok('rejected', False, str(e)[:2000])
-    if pr is None and r is not None:
-        res.append(('rank_lower_bound', True, 'not proved here: rank >= %d is from %s' % (r, rl.get('source'))))
+    return _end(c, res, st, pr is not None, quiet, log, curve, t0)
+
+
+def _end(c, res, st, proved, quiet, log, curve, t0):
+    """Return verify()'s (all passed, the checks, the statement, c), adding the note of a cited r, and log the
+    verdict."""
+    rl = c.get('rank_lower_bound') or {}
+    if not proved and rl.get('r') is not None:
+        res.append(('rank_lower_bound', True, 'not proved here: rank >= %d is from %s' % (rl['r'], rl.get('source'))))
     allok = all(x[1] for x in res)
     if not quiet:
         dt = '%.0f s' % (time.time() - t0)
@@ -600,6 +615,32 @@ def _verify1(cdir, cores, gp, quiet, log, curve, max_mb, max_seconds, t0):
         else:
             log('FAIL: ' + _reason(res, c['name'], curve, dt)[1])
     return allok, res, st, c
+
+
+def _verify_descent(c, res, ok, gp, quiet, log, curve, left, t0):
+    """_verify1 for a 2-descent certificate c (two_descent.py), after its form was checked."""
+    from . import two_descent as td
+    cur, st = c['curve'], ''
+    if curve is not None:
+        same = same_curve([int(x) for x in curve], [int(x) for x in cur['ainvs']])
+        ok('curve', same, 'the curve given' if same else 'not isomorphic to the curve given [%s]' % ','.join(map(str, curve)))
+    try:
+        if curve is not None and not same:
+            raise Rejected('the certificate is for another curve')
+        out = run_gp(td.gp_body(c), libs=('verify.gp', 'two_descent.gp'),
+                     seconds=24 * 3600 if left() is None else left(), gp=gp)
+        for l in out.splitlines():
+            t = l.split(' ', 3)
+            if t[0] == 'CHK':
+                ok(t[1], t[2] == '1', t[3] if len(t) > 3 else '')
+        printed = {x[0] for x in res}
+        for name in td.check_names(c):
+            if name not in printed:
+                ok(name, False, 'not printed by gp')
+        st = td.claims(c, out, ok)
+    except Rejected as e:
+        ok('rejected', False, str(e)[:2000])
+    return _end(c, res, st, 'points' in (c.get('rank_lower_bound') or {}), quiet, log, curve, t0)
 
 
 # ---------- the verdict (rankbound verify --json)
@@ -615,13 +656,15 @@ def check(cert, curve=None, cores=1, gp='gp', max_mb=None, max_seconds=None, log
 
     verdict is 'accepted', 'rejected' (a check failed, or the certificate is not for curve), 'limit' (over max_mb,
     max_seconds or unbounded work: not checked) or 'error' (the verifier could not run), and reason says why.  An
-    accepted certificate gives rank_upper_bound S (rank E(Q) <= S under HYPOTHESIS), G, u, n, w, rank_lower_bound,
-    r_proved and rank (S when S = 0 or S = r is proved, else None).  log receives the log lines (None: quiet)."""
+    accepted certificate gives rank_upper_bound S (rank E(Q) <= S under hypothesis: HYPOTHESIS, or the 2-descent's,
+    unconditional), GRH ('yes' or 'no'), method ('class group' or '2-isogeny descent'), torsion (None in format 2), G,
+    u, n (None for a 2-descent), w, rank_lower_bound, r_proved and rank (S when S = 0 or S = r is proved, else None).
+    log receives the log lines (None: quiet)."""
     t0 = time.time()
     v = {'verdict': None, 'reason': '', 'certificate': str(cert), 'sha256': None, 'name': None, 'curve': None,
          'rank_upper_bound': None, 'rank_lower_bound': None, 'r_proved': None, 'rank': None, 'G': None, 'u': None,
-         'n': None, 'w': None, 'hypothesis': HYPOTHESIS, 'statement': None, 'checks': [], 'verifier': None,
-         'deploy': None, 'gp': None, 'date': None, 'seconds': None}
+         'n': None, 'w': None, 'GRH': None, 'method': None, 'torsion': None, 'hypothesis': None, 'statement': None,
+         'checks': [], 'verifier': None, 'deploy': None, 'gp': None, 'date': None, 'seconds': None}
     try:
         prov = _provenance(gp)
         v.update((k, prov[k]) for k in ('verifier', 'deploy', 'gp', 'date'))
@@ -634,8 +677,12 @@ def check(cert, curve=None, cores=1, gp='gp', max_mb=None, max_seconds=None, log
         if good:
             rl = c.get('rank_lower_bound') or {}
             S, r = c['claims']['S'], rl.get('r')
+            from .two_descent import FORMAT as TD, HYPOTHESIS as TDH
+            descent = c['format'] == TD
             v.update(verdict='accepted', name=c['name'], curve=c['curve']['minimal_model'], rank_upper_bound=S,
-                     G=c['claims']['G'], u=c['local']['u'], n=c['local']['n'], w=c['local']['w'], rank_lower_bound=r,
+                     G=c['claims'].get('G'), u=c['local'].get('u'), n=c['local'].get('n'), w=c['local']['w'],
+                     GRH=c.get('GRH', 'yes'), torsion=c.get('torsion'), hypothesis=TDH if descent else HYPOTHESIS,
+                     method='2-isogeny descent' if descent else 'class group', rank_lower_bound=r,
                      r_proved=r is not None and ('points' in rl or r == 0), statement=st)
             v['rank'] = S if S == 0 or (v['r_proved'] and S == r) else None
         else:

@@ -94,6 +94,7 @@ sfield(ai, P) =
   print("SF\tbk_primes\t", strjoin(apply(z -> Str(z[1], ":", z[2], ":", z[3], ":", z[4]), bk[3]), ","));
   print("SF\tw\t", w);
   print("SF\tsignD\t", sign(E.disc));
+  print("SF\ttorsion\t", strjoin(apply(z -> Str(z), elltors(E)[2]), ","));
   \\ J: odd valuations, as labels where the prime has degree 1 (else p:k:f, a large column)
   foreach(factor(lc)[, 1]~, p, my(lab = sflabels(nfF, al, Jinv, ff, p), dec = idealprimedec(nfF, p));
     for(k = 1, #dec, my(v = -idealval(nfF, Jinv, dec[k]));
