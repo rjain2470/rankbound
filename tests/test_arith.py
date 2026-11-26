@@ -56,7 +56,8 @@ class TestNoGP(unittest.TestCase):
     def test_bound(self):
         d = tempfile.mkdtemp()
         try:
-            env = dict(os.environ, PATH='/usr/bin:/bin', RANKBOUND_PROVER='py', PYTHONPATH=SRC)
+            os.mkdir(os.path.join(d, 'bin'))           # an empty PATH: gp may be anywhere, /usr/bin on Debian
+            env = dict(os.environ, PATH=os.path.join(d, 'bin'), RANKBOUND_PROVER='py', PYTHONPATH=SRC)
             for ai in ('0,0,0,-25,0', '0,-1,1,-929,-10595'):
                 r = subprocess.run([sys.executable, '-m', 'rankbound', 'bound', ai, '--compute', '--dir', d, '--json'],
                                    capture_output=True, text=True, cwd=d, env=env)

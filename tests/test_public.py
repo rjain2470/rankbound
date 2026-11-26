@@ -26,7 +26,10 @@ def local_words():
 
 
 def tracked():
-    r = subprocess.run(['git', '-C', ROOT, 'ls-files', '-z'], capture_output=True)
+    try:
+        r = subprocess.run(['git', '-C', ROOT, 'ls-files', '-z'], capture_output=True)
+    except OSError:                                 # no git
+        return None
     return [f for f in r.stdout.decode().split('\0') if f] if r.returncode == 0 else None
 
 

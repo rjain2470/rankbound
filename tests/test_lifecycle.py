@@ -8,6 +8,7 @@ from unittest import mock
 from rankbound import core, runner, runtime
 from rankbound.core import (GRH, UNCONDITIONAL, LowerBound, Locked, ProofData, Request, Resources, Stopped, TimeLimit,
                             Verdict)
+from helpers import ended
 
 FORK = mp.get_context('fork')
 
@@ -291,8 +292,7 @@ class TestProcesses(unittest.TestCase):
         with open(pidf) as f:
             gc = int(f.read())
         time.sleep(0.1)
-        with self.assertRaises(ProcessLookupError):     # the grandchild went with its group
-            os.kill(gc, 0)
+        self.assertTrue(ended(gc))                      # the grandchild went with its group
         self.assertEqual(runtime._CHILDREN, set())
 
     def test_run_ok_and_expired(self):

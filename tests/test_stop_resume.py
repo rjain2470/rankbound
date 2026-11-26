@@ -10,6 +10,7 @@ from rankbound import cli, runtime, sieve as jobs  # noqa: E402
 from rankbound.messages import text  # noqa: E402
 from rankbound.sieve import State  # noqa: E402
 from test_stopping import E571, N571, PRM, R, FakeRun  # noqa: E402
+from helpers import ended  # noqa: E402
 
 BUSY = 'import time\nt = time.process_time()\nwhile time.process_time() - t < %s: pass'
 
@@ -34,9 +35,7 @@ def gone(pid, seconds=10):
     """Whether the process pid has ended within seconds (runtime.terminate's grace is 5 s)."""
     t = time.monotonic()
     while time.monotonic() - t < seconds:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if ended(pid):
             return True
         time.sleep(0.05)
     os.kill(pid, signal.SIGKILL)

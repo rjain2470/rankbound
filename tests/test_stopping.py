@@ -259,7 +259,7 @@ class TestBudget(FakeRun, unittest.TestCase):
         st = runtime.RunStore(self.d)
         st.begin({'k': 1})
         cpu = lambda: time.monotonic() * 36000      # a CPU clock of 10 core-hours a second
-        st.set_budget(10.0 / 3)             # 3x the estimate: 10 core-hours, ~1 s of this run's time
+        st.set_budget(25.0 / 3)             # 3x the estimate: 25 core-hours, ~2.5 s, so two runs of 1 s leave room
         self.delay, self.nxt = 0.15, R      # a check after every slice: the budget ends a run after its first one
         self.S.save_history([{'relations': R, 'rows': 1, 'excess': 1, 'bound': 5, 'solve_s': 1e-4}])   # quick checks
         outs = []
@@ -267,17 +267,17 @@ class TestBudget(FakeRun, unittest.TestCase):
             meter = runtime.Meter(st, cpu=cpu)
             try:
                 with self.assertLogs('rankbound', 'INFO') as out:
-                    outs.append(jobs.sieve_run(self.d, jobs=1, budget=runtime.Budget(seconds=0.45), meter=meter)[0])
+                    outs.append(jobs.sieve_run(self.d, jobs=1, budget=runtime.Budget(seconds=1.0), meter=meter)[0])
             finally:
                 meter.close()
         self.assertEqual(outs, [None, None, 'budget'])
-        self.assertEqual((self.S.stop_outcome(), self.S.stop_record()['budget_core_hours']), ('budget', 10.0))
-        self.assertGreaterEqual(self.S.stop_record()['spent_core_hours'], 10.0)
+        self.assertEqual((self.S.stop_outcome(), self.S.stop_record()['budget_core_hours']), ('budget', 25.0))
+        self.assertGreaterEqual(self.S.stop_record()['spent_core_hours'], 25.0)
         self.assertFalse(any('budget' in l for l in out.output), out.output)    # the reason is the runner's to show
         sp = st.spent()
         self.assertEqual(sp['runs'], 3)
-        self.assertGreaterEqual(sp['core_hours'], 10.0)
-        self.assertLess(sp['core_hours'], 14.0)
+        self.assertGreaterEqual(sp['core_hours'], 25.0)
+        self.assertLess(sp['core_hours'], 35.0)
 
 
 class TestEndToEnd(unittest.TestCase):

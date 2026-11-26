@@ -1,7 +1,7 @@
 """Shared by the tests: the honest witnesses of every format (corpus) and paths in them (paths, get, put, drop),
 the format-3 witness of ICARM #0 (wit0), a Solver without __init__ (bare_solver), the failed
 checks of a witness (fails), a route's run through the runner (run_route), the GP function td1 of the 2-isogeny
-descent (DESCENT) and PARI's rows of relations (REFROWS)."""
+descent (DESCENT), PARI's rows of relations (REFROWS) and whether a process has ended (ended)."""
 import atexit, copy, json, os, shutil, tempfile
 import rankbound
 
@@ -14,6 +14,20 @@ ICARM0_RELS = ('-83,1 -7,1 -4,1 -3,1 -2,1 2,1 3,1 4,1 5,1 7,1 39,1 45,1 117,1 -2
                '-1,4 3,4 -2,5 -1,5 1,5 2,5 7,5 58,5 507,5 -1,6 -43,7 -5,7 1,7 3,7 -4,9 -7,11 -5,11 -8,15 -9,16 91,31 '
                '-17,43 130,97').split()
 _WIT0 = []
+
+
+def ended(pid):
+    """Return whether the process pid has ended: it is gone, or a zombie that no one reaps (a container's PID 1 may
+    never reap the orphans it inherits)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        with open('/proc/%d/stat' % pid) as f:
+            return f.read().rsplit(')', 1)[1].split()[0] == 'Z'
+    except OSError:
+        return False
 
 
 def wit0():
