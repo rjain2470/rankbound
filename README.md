@@ -21,7 +21,8 @@ and every one is sharp.
 For the 3,753 curves without rational 2-torsion, the bound assumes the GRH. Here, 3,745 have a sharp proven rank, four have
 a non-sharp upper bound, and four were not bounded. Of the four, #289 had a
 discriminant too large to be factored, #374 and #443 gave too few relations, and the cubic field of #568 has a coefficient
-too large for the siever. We obtained sharp upper bounds for the rank of every curve on ICARM of rank 31 and rank 32.
+too large for the siever. Sharp upper bounds are obtained for the rank of every curve on ICARM of rank 31 and rank 32, so
+their ranks are proven exact under the GRH.
 
 For each curve, we store a *witness*, or a JSON file proving its rank upper bound. For curves with rational 2-torsion,
 each witness contains the bases of its Selmer groups and the data of its pairings. For curves without 2-torsion, each
