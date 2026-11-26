@@ -159,11 +159,13 @@ class TestSelmerSearch(unittest.TestCase):
         self.assertIsNone(runtime.current().end)
 
     def test_one_budget(self):
-        """Four ranges of 0.4 s each on one core with a budget of 1 s: TimeLimit by about 1.2 s (the old per-range
-        budgets let all four finish, 1.6 s)."""
+        """Four ranges of 0.4 s each on one core with a budget of 1 s: TimeLimit by about 1.2 s, the fourth range never
+        started (the old per-range budgets let all four finish, 1.6 s)."""
         old = selmer.tri
+        calls = []
 
         def slow(f, P, S, lo, hi, smax, seconds=None):
+            calls.append(lo)
             t = time.monotonic()
             time.sleep(0.4)
             if time.monotonic() - t > seconds:
@@ -175,7 +177,8 @@ class TestSelmerSearch(unittest.TestCase):
             t = time.time()
             with self.assertRaises(TimeLimit):
                 selmer.triangular({'poly': [1, 0, -2, 1]}, [], [2], 2, 10 ** 5, cores=1, seconds=1.0)
-            self.assertLess(time.time() - t, 1.5)
+            self.assertLessEqual(len(calls), 3)
+            self.assertLess(time.time() - t, 3.0)       # loose: a slow runner adds its own time
         finally:
             selmer.tri = old
 
