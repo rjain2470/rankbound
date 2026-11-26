@@ -1,6 +1,12 @@
 name: test
 on: [push, pull_request]
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run ruff==0.17.6 check .        # pyproject.toml's rules (make lint)
+      - run: pipx run mypy==2.4.1                 # pyproject.toml's [tool.mypy] files (make typecheck)
   test:
     runs-on: ubuntu-latest
     container: debian:trixie        # PARI/GP 2.17 (Ubuntu's is older)
@@ -10,3 +16,18 @@ jobs:
       - run: gp --version-short </dev/null
       - run: python3 -m venv /tmp/v && /tmp/v/bin/pip install . && cd /tmp && /tmp/v/bin/rankbound bound 0,1,1,-2,0 --compute
       - run: make test
+  test-macos:
+    runs-on: macos-latest           # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install pari gmp-ecm
+      - run: gp --version-short </dev/null
+      - run: python3 -m venv /tmp/v && /tmp/v/bin/pip install . && cd /tmp && /tmp/v/bin/rankbound bound 0,1,1,-2,0 --compute
+      - run: make test
+  sanitizers:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y --no-install-recommends pari-gp gmp-ecm python3 make gcc libc6-dev
+      - run: make test-asan          # the C programs under ASan and UBSan, through every test module that runs one

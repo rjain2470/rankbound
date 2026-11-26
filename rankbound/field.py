@@ -1,433 +1,166 @@
-"""The curve and its cubic field: the checks of the input, the minimal model, and the field data from field.gp in
-STATE/field.json and STATE/small.txt."""
-import dataclasses, fractions, gzip, hashlib, json, os
-from dataclasses import dataclass, field
-from typing import List, Optional
-from .verify import MAX_DIGITS, NAME, NUM, RAT, Rejected, parity_bound, run_gp
-from . import FactorisationNeeded, NotApplicable, gp_message, read_json, write_json
+"""The cubic field K of a curve with E(Q)[2] = 0, without PARI: its data and its arithmetic."""
+import copy, functools, gzip, json, math, os
+from types import SimpleNamespace
+from fractions import Fraction
+from decimal import Decimal, localcontext
+from . import runtime
+from .core import NotApplicable, parity_bound
+from .runtime import read_json
+from . import arith as A, curve as cv
+from .curve import NOT_APPLICABLE, _ainvs5, canon, check_name
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FORMAT = 'rankbound-selmer-field-1'
 
 
-# ---------- values that reach gp
-
-WHAT = {'ainvs': 'a-invariant', 'bad_primes': 'bad prime', 'minimal_model': 'minimal_model value',
-        'proof point': 'point coordinate', 'mapped point': 'point coordinate'}    # how messages name each value
-
-def canon(x, what, pat=NUM):
-    """Return x, a JSON integer or a canonical decimal string, as a string; raise ValueError otherwise."""
-    # gp evaluates what it reads, so every value pasted into gp passes here first.
-    if type(x) is int:
-        s = str(x) if x.bit_length() <= 14000 else None      # str() refuses over 4,300 digits
-    else:
-        s = x if isinstance(x, str) and pat.fullmatch(x) else ''
-    what = WHAT.get(what, what)
-    if s is None or len(s) > MAX_DIGITS:
-        raise ValueError("%s %s has more than %d digits, the verifier's limit." % (
-            'An' if what[0] in 'aeiou' else 'A', what, MAX_DIGITS))
-    if s:
-        return s
-    if pat is NUM:
-        raise ValueError('The %s %.80r is not an integer.' % (what, x))
-    raise ValueError('The %s %.80r is not written like -3/4.' % (what, x))
-
-
-def check_name(name):
-    """Return name if the verifier accepts it (at most 64 letters, digits and _.-), else raise ValueError."""
-    if isinstance(name, str) and NAME.fullmatch(name) and name not in ('.', '..'):
-        return name
-    raise ValueError('The name %.80r is not allowed: use at most 64 letters, digits, _ . and -.' % (name,))
-
-
-def r_value(r):
-    """Return r if it is None or an integer >= 0, else raise ValueError."""
-    if r is None or (type(r) is int and r >= 0):
-        return r
-    raise ValueError('r must be an integer >= 0.')
-
-
-PROOF = '"proof" must be {"points": [[x, y], ...], "primes": [p, ...]}.'
-
-
-def check_proof(proof):
-    """Return the proof of a rank lower bound (points, and optionally primes and ainvs) or None, checked as the
-    verifier checks it; raise ValueError if it is malformed."""
-    if proof is None:
-        return None
-    if not isinstance(proof, dict):
-        raise ValueError(PROOF)
-    pts, prs = proof.get('points'), proof.get('primes', [])
-    if not (isinstance(pts, list) and (prs is None or isinstance(prs, list))):
-        raise ValueError(PROOF)
-    prs = prs or []
-    if proof.get('ainvs') is not None:
-        _ainvs5(proof['ainvs'])
-    for pt in pts:
-        if not (isinstance(pt, list) and len(pt) == 2):
-            raise ValueError(PROOF)
-        for x in pt:
-            canon(x, 'proof point', RAT)
-    for p in prs:
-        if type(p) is not int:
-            raise ValueError(PROOF)
-    return proof
-
-
-def point_value(x):
-    """Return a point coordinate (an int, a Fraction or a string like '-3/4') as a canonical string."""
-    if isinstance(x, fractions.Fraction):
-        x = str(x)
-    return canon(x, 'point coordinate', RAT)
-
-
-def read_points(path):
-    """Return the points of a --points file, one 'x y' or 'x,y' per line; blank and '#' lines are skipped."""
-    pts = []
-    with open(path) as f:
-        try:
-            for k, l in enumerate(f, 1):
-                t = l.replace(',', ' ').split()
-                if not t or t[0].startswith('#'):
-                    continue
-                if len(t) != 2:
-                    raise ValueError('%s, line %d: not a point "x y".' % (path, k))
-                pts.append(t)
-        except UnicodeDecodeError:
-            raise ValueError('%s is not UTF-8 text.' % path)
-    return pts
-
-
-def with_points(curve, points, r=None):
-    """Return curve with r = len(points), to be proved by the points, which are on the given model and must be
-    independent modulo 2E(Q)."""
-    if not all(isinstance(p, (list, tuple)) for p in seq(points, 'points')):
-        raise ValueError('Each point must be a pair (x, y).')
-    pts = [[point_value(x) for x in p] for p in points]
-    if any(len(p) != 2 for p in pts):
-        raise ValueError('Each point must be a pair (x, y).')
-    if r is not None and r_value(r) != len(pts):
-        raise ValueError('r = %s but %d points were given.' % (r, len(pts)))
-    return dataclasses.replace(curve, r=len(pts), proof={'points': pts, 'ainvs': list(curve.ainvs)}, source='cited')
-
-
-# ---------- the curve
-
-@dataclass(frozen=True)
-class Curve:
-    name: str
-    ainvs: List[str]                          # the input model
-    bad_primes: Optional[List[str]]           # None: not given in a curve list (factored())
-    r: Optional[int] = None                   # a known rank lower bound
-    proof: Optional[dict] = None              # points (and primes) that prove r
-    source: str = 'cited'                     # where r is from, without a proof
-    minimal_model: Optional[List[str]] = None
-    composites: List[str] = field(default_factory=list)
-    torsion: Optional[List[int]] = None       # E(Q)_tors as from elltors, e.g. [2, 2]; None: not computed yet
-
-    def to_dict(self):
-        d = {'name': self.name, 'ainvs': self.ainvs, 'bad_primes': self.bad_primes, 'composites': self.composites,
-             'r': self.r, 'proof': self.proof, 'source': self.source}
-        if self.minimal_model is not None:
-            d['minimal_model'] = self.minimal_model
-        if self.torsion is not None:
-            d['torsion'] = self.torsion
-        return d
-
-    @classmethod
-    def from_dict(cls, d):
-        return cls(name=d['name'], ainvs=d['ainvs'], bad_primes=d['bad_primes'], r=d.get('r'), proof=d.get('proof'),
-                   source=d.get('source', 'cited'), minimal_model=d.get('minimal_model'), composites=d.get('composites', []),
-                   torsion=d.get('torsion'))
-
-    def two_torsion(self):
-        """Return whether E(Q)[2] != 0 (the 2-descent path), from the torsion; None if it is not known."""
-        return None if self.torsion is None else any(n % 2 == 0 for n in self.torsion)
-
-    def key(self):
-        """Return the default name of the curve."""
-        return default_name(self.minimal_model or from_ainvs(self.ainvs, bad_primes=self.bad_primes).minimal_model)
-
-
-def default_name(mm):
-    """Return the minimal model's a-invariants joined by '_', or a 12-digit hash of them if that is over 64
-    characters."""
-    s = '_'.join(str(x) for x in mm)
-    return s if len(s) <= 64 else hashlib.sha256(','.join(str(x) for x in mm).encode()).hexdigest()[:12]
-
-
-def checked(c):
-    """Return c, a Curve made by hand, after checking every field as from_ainvs would; raise ValueError otherwise."""
-    if not isinstance(c, Curve):
-        raise ValueError('Expected a Curve.')
-    check_name(c.name)
-    _ainvs5(c.ainvs)
-    _bad_primes(c.bad_primes)
-    for x in seq(c.composites, 'composites'):
-        canon(x, 'composite')
-    if c.minimal_model is not None:
-        [canon(x, 'minimal_model') for x in seq(c.minimal_model, 'minimal_model')]
-    r_value(c.r)
-    check_proof(c.proof)
-    if not isinstance(c.source, str):
-        raise ValueError('source must be a string.')
-    if c.torsion is not None and not (isinstance(c.torsion, list) and len(c.torsion) <= 2
-                                      and all(type(n) is int and n > 0 for n in c.torsion)):
-        raise ValueError('torsion must be a list of at most two positive integers, as from elltors.')
-    return c
-
-
-# The minimal model, E(Q)_tors (elltors), and the bad primes: trial division to 10^6, cheap splits of what is left
-# (perfect powers, the gcd with c4, which the primes of additive reduction divide), then factor() for at most S seconds
-# per cofactor (none with S = 0: the composites go to the ECM step).
-CURVE_GP = '''{ my(E = ellminimalmodel(ellinit([%s])), P = List(), C = List(), G,
-     J = (v -> strjoin(apply(z -> Str(z), Vec(v)), ",")), S = %d);
-  if(%d, my(F = factor(abs(E.disc), 10^6), todo = List());
-    for(i = 1, #F~, my(p = F[i, 1]); if(p < 10^6 || ispseudoprime(p), listput(P, p), listput(todo, p)));
-    while(#todo, my(q = todo[#todo], k, g); listpop(todo);
-      if(q == 1, next);
-      if(ispseudoprime(q), listput(P, q); next);
-      k = ispower(q, , &g); if(k, listput(todo, g); next);
-      g = gcd(q, E.c4); if(g > 1 && g < q, listput(todo, g); listput(todo, q / g); next);
-      G = if(S, iferr(alarm(S, factor(q)), e, 0), 0);
-      if(type(G) != "t_MAT", listput(C, q); next);
-      for(j = 1, #G~, if(ispseudoprime(G[j, 1]), listput(P, G[j, 1]), listput(C, G[j, 1])))));
-  print("E2\\t", J(elltors(E)[2]), "\\t", J(E[1..5]), "\\t", J(Set(Vec(P))), "\\t", J(Set(Vec(C)))); }'''
-
-
-def seq(v, what):
-    """Return v if it is a list or tuple, else raise ValueError (a string would be read character by character)."""
-    if isinstance(v, (list, tuple)):
-        return v
-    raise ValueError('%s must be a list.' % what)
-
-
-def disc(a):
-    """Return the discriminant of the a-invariants a."""
-    a1, a2, a3, a4, a6 = a
-    b2, b4, b6 = a1 * a1 + 4 * a2, 2 * a4 + a1 * a3, a3 * a3 + 4 * a6
-    b8 = a1 * a1 * a6 + 4 * a2 * a6 - a1 * a3 * a4 + a2 * a3 * a3 - a4 * a4
-    return -b2 * b2 * b8 - 8 * b4 ** 3 - 27 * b6 * b6 + 9 * b2 * b4 * b6
-
-
-def _ainvs5(ainvs):
-    """Return the 5 integers of ainvs (5 a-invariants or [a4, a6]); raise ValueError if malformed or singular."""
-    a = [int(canon(x, 'a-invariant')) for x in seq(ainvs, 'ainvs')]
-    if len(a) == 2:
-        a = [0, 0, 0] + a
-    if len(a) != 5:
-        raise ValueError('Give the curve as a1,a2,a3,a4,a6 or as a4,a6.')
-    if disc(a) == 0:
-        raise ValueError('The a-invariants [%s] give a singular curve (discriminant 0).' % ','.join(map(str, a)))
-    return a
-
-
-def _bad_primes(bad_primes):
-    """Return bad_primes as canonical strings, each >= 2; raise ValueError otherwise."""
-    bad_primes = [canon(p, 'bad prime') for p in seq(bad_primes, 'bad_primes')]
-    for p in bad_primes:
-        if int(p) < 2:
-            raise ValueError('The bad prime %s is not prime.' % p)
-    return bad_primes
-
-
-def minimal_model(ainvs, bad_primes=None, gp='gp'):
-    """Return the reduced minimal model of ainvs as 5 strings; the discriminant is factored only as far as
-    ellminimalmodel needs."""
-    a = _ainvs5(ainvs)
-    pre = '' if bad_primes is None else 'addprimes([%s]); ' % ','.join(_bad_primes(bad_primes))
-    out = run_gp(pre + 'print("MM\\t", strjoin(apply(z -> Str(z), Vec(ellminimalmodel(ellinit([%s]))[1..5])), ","));'
-                 % ','.join(map(str, a)), seconds=7200, gp=gp)
-    return next(l.split('\t')[1].strip() for l in out.splitlines() if l.startswith('MM')).split(',')
-
-
-NOT_APPLICABLE = ('This curve has a rational point of order 2, so the class group method does not apply (rankbound() '
-                  'and `rankbound bound` use a 2-isogeny descent for it).')
-
-
-def torsion(ainvs, gp='gp'):
-    """Return the structure of E(Q)_tors of the a-invariants ainvs (any model), as from elltors: e.g. [2, 2]."""
-    out = run_gp('print("T\\t", strjoin(apply(z -> Str(z), elltors(ellinit([%s]))[2]), ","));'
-                 % ','.join(map(str, _ainvs5(ainvs))), seconds=600, gp=gp)
-    t = next(l.split('\t')[1].strip() for l in out.splitlines() if l.startswith('T'))
-    return [int(x) for x in t.split(',') if x]
-
-
-def classified(curve, gp='gp'):
-    """Return curve with its torsion, computed if it is not known."""
-    return curve if curve.torsion is not None else dataclasses.replace(curve, torsion=torsion(curve.ainvs, gp))
-
-
-def from_ainvs(ainvs, bad_primes=None, r=None, name=None, gp='gp', factor_seconds=600, composites=False):
-    """Return the Curve of ainvs, on any model.  Without bad_primes the discriminant is factored, by PARI for at most
-    factor_seconds per cofactor; a composite left raises FactorisationNeeded or, with composites, is returned in
-    Curve.composites, for Job.prepare's ECM step.  The torsion is recorded (Curve.torsion): E(Q)[2] != 0 takes
-    the 2-descent path."""
-    a = _ainvs5(ainvs)
-    r = r_value(r)
-    if name is not None:
-        check_name(name)
-    body = CURVE_GP % (','.join(map(str, a)), int(factor_seconds), bad_primes is None)
-    if bad_primes is not None:
-        bad_primes = _bad_primes(bad_primes)
-        body = 'addprimes([%s]);\n' % ','.join(bad_primes) + body
-    out = run_gp(body, seconds=7200, gp=gp)
-    t = next(l.split('\t') for l in out.splitlines() if l.startswith('E2'))
-    left = []
-    if bad_primes is None:
-        left = [x for x in t[4].strip().split(',') if x]
-        if left and not composites:
-            raise FactorisationNeeded('PARI could not factor the discriminant. Give its prime factors with '
-                                      '--bad-primes P1,P2,...', [{'n': c, 'digits': len(c)} for c in left])
-        bad_primes = [x for x in t[3].strip().split(',') if x]
-    mm = t[2].strip().split(',')
-    return Curve(name=default_name(mm) if name is None else name, ainvs=[str(x) for x in a], bad_primes=[str(p) for p in bad_primes], r=r,
-                 minimal_model=mm, composites=left, torsion=[int(x) for x in t[1].strip().split(',') if x])
-
-
-def from_list(path, ids=None):
-    """Return the curves of a JSON curve list (optionally gzipped) whose id is in ids (None: all).  Each needs id (or
-    icarm_id) and ainvs; bad_primes (and composites, if bad_primes are not all the primes) or neither, to be factored
-    (factored()); a ValueError names the curve."""
-    try:
-        with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as f:
-            d = json.load(f)
-    except UnicodeDecodeError:
-        raise ValueError('%s is not UTF-8 text.' % path)
-    except json.JSONDecodeError as e:
-        raise ValueError('%s is not valid JSON at line %d, column %d.' % (path, e.lineno, e.colno))
-    except (gzip.BadGzipFile, EOFError):
-        raise ValueError('%s is not a valid gzip file.' % path)
-    src = os.path.basename(path)
-    if not (isinstance(d, dict) and isinstance(d.get('curves'), list)
-            and all(isinstance(c, dict) for c in d['curves'])):
-        raise ValueError('%s is not a curve list; see the README for the format.' % src)
-    out, found, seen = [], set(), set()
-    for k, c in enumerate(d['curves'], 1):
-        icarm = 'icarm_id' in c
-        i = c['icarm_id'] if icarm else c.get('id')
-        if i is None:
-            raise ValueError('Entry %d of %s has no "id".' % (k, src))
-        if str(i) in seen:
-            raise ValueError('%s has two curves with the id %.80s.' % (src, i))
-        seen.add(str(i))
-        if ids and str(i) not in {str(x) for x in ids}:
-            continue
-        found.add(str(i))
-        try:
-            ai = [canon(x, 'ainvs') for x in seq(c['ainvs'], 'ainvs')]
-            _ainvs5(ai)                                         # a singular curve is refused here
-            mm = c.get('minimal_model')
-            mm = None if mm is None else [canon(x, 'minimal_model') for x in seq(mm, 'minimal_model')]
-            pf = check_proof(c.get('proof'))
-            # The list's points are on its ainvs; record that, so the certificate can map them.
-            if pf is not None and pf.get('ainvs') is None:
-                pf = dict(pf, ainvs=ai)
-            r = r_value(c.get('r'))
-            if 'bad_primes' in c:
-                bad = [canon(p, 'bad_primes') for p in seq(c['bad_primes'], 'bad_primes')]
-            elif c.get('composites'):
-                raise ValueError('"composites" needs "bad_primes" (the primes found so far).')
-            else:
-                bad = None
-            if r is None and pf is not None and pf.get('points'):   # r defaults to the number of points
-                r = len(pf['points'])
-            out.append(Curve(name=check_name(c.get('name', ('icarm%s' if icarm else 'curve%s') % i)), ainvs=ai,
-                             bad_primes=bad,
-                             composites=list(seq(c.get('composites', []), 'composites')), r=r, proof=pf,
-                             source='ICARM #%s' % i if icarm else 'curve %s of %s' % (i, src), minimal_model=mm))
-        except (ValueError, TypeError) as e:
-            raise ValueError('%s, curve %s: %s' % (src, i, e))
-        except KeyError as e:
-            raise ValueError('Curve %s of %s has no "%s".' % (i, src, e.args[0]))
-    if ids and found != {str(x) for x in ids}:
-        miss = sorted({str(x) for x in ids} - found)
-        raise ValueError('%s has no curve with the id%s %s.' % (src, 's' if len(miss) > 1 else '', ', '.join(miss)))
-    names = [c.name for c in out]
-    if len(set(names)) < len(names):
-        raise ValueError('%s has two curves named %s.' % (src, sorted(n for n in names if names.count(n) > 1)[0]))
-    if not out:
-        raise ValueError('%s has no curves.' % src)
-    return out
-
-
-def factored(curve, ecm_hours, workdir):
-    """Return curve (of a list) given without bad_primes with them: from workdir's field.json if it was prepared
-    there, else as from_ainvs finds them, with what is left in composites for Job.prepare's ECM step (with ecm_hours
-    0, PARI's factor() for 600 s per cofactor, as in 1.0)."""
-    if curve.bad_primes is not None:
-        return curve
-    p, q = os.path.join(workdir, 'field.json'), os.path.join(workdir, 'curve.json')
-    if os.path.exists(p) and os.path.exists(q) and [str(x) for x in read_json(q)['ainvs']] == list(curve.ainvs):
-        return dataclasses.replace(curve, bad_primes=read_json(p)['bad_primes'], composites=[])
-    try:
-        c = from_ainvs(curve.ainvs, factor_seconds=0 if ecm_hours else 600, composites=bool(ecm_hours))
-    except FactorisationNeeded as e:
-        raise FactorisationNeeded('PARI could not factor the discriminant. Give its prime factors in "bad_primes".',
-                                  e.composites)
-    return dataclasses.replace(curve, bad_primes=c.bad_primes, composites=c.composites)
-
-
 # ---------- the field
 
-def compute(ainvs, bad_primes, gp='gp', seconds=7200):
-    """Return (the field data, the small labels (p, r)) from field.gp; raise ValueError, with field.gp's message, if
-    the bad primes are wrong."""
-    _ainvs5(ainvs)                  # every input passes here
-    body = 'sfield([%s], [%s]);' % (','.join(canon(a, 'a-invariant') for a in ainvs),
-                                    ','.join(canon(p, 'bad prime') for p in bad_primes))
-    try:
-        out = run_gp(body, libs=('verify.gp', os.path.join(HERE, 'field.gp')), seconds=seconds, gp=gp)
-    except Rejected as e:           # field.gp's error() on bad input
-        msg = gp_message(e).splitlines()[0]
-        if msg.startswith('The bad prime'):
-            raise ValueError(msg)
-        if msg.startswith('E2 '):
-            raise NotApplicable(NOT_APPLICABLE)
-        raise
-    sf, small, ram = {}, [], []
-    for l in out.splitlines():
-        t = l.split('\t')
-        if t[0] == 'SF':
-            sf[t[1]] = t[2] if len(t) > 2 else ''
-        elif t[0] == 'S':
-            small.append((int(t[1]), int(t[2])))
-        elif t[0] == 'RAM':
-            ram.append({'p': t[1], 'all_degree_1': t[2] == '1',
-                        'labels': [[int(x) for x in z.split(':')] for z in t[3].split(',') if z]})
-    if int(sf['ns']) != len(small):
-        raise RuntimeError('field.gp: ns %s but %d labels' % (sf['ns'], len(small)))
-    lst = lambda s: [x for x in s.split(',') if x]
+_MEMO = {}
+
+
+def compute(ainvs, bad_primes):
+    """Return (the field data, the small labels), memoised for one curve."""
+    key = (tuple(str(a) for a in ainvs), tuple(str(p) for p in bad_primes))
+    if key not in _MEMO:
+        _MEMO.clear()
+        _MEMO[key] = field_data([int(p) for p in (canon(p, 'bad prime') for p in bad_primes)], _ainvs5(ainvs))
+    F, small = _MEMO[key]
+    return copy.deepcopy(F), list(small)
+
+
+def check_bad_primes(a, P):
+    """Return (the minimal model, [u, r, s, t]) of a; raise ValueError unless P is exactly its bad primes."""
+    for p in P:
+        if p < 2 or not A.is_prime(p):
+            raise ValueError('The bad prime %d is not prime.' % p)
+    if len(set(P)) != len(P):
+        raise ValueError('The bad prime %d is listed twice.' % next(p for p in P if P.count(p) > 1))
+    mm, v = cv.minimal(a, P)
+    D = cv.cinv(mm)[2]
+    for p in P:
+        if D % p:
+            raise ValueError('The bad prime %d does not divide the minimal discriminant.' % p)
+    r = abs(D)
+    for p in P:
+        r //= p ** A.val(r, p)
+    if r != 1:
+        raise ValueError('The bad primes given do not account for the whole discriminant.')
+    return mm, v
+
+
+def ftypes(f, p):
+    """Return ([(r, e)] of the degree-1 primes above p, [f] of all primes above p)."""
+    pts = roots_p1(f, p)
+    rest = 3 - sum(m for _, m in pts)
+    return pts, [1] * len(pts) + ([rest] if rest else [])
+
+
+EULER, CATALAN = 0.5772156649015329, 0.915965594177219
+
+
+def bdf(f, dK, r1, Tmax, types=None):
+    """Return the least T at which [BDF08] (10) holds in floats with margin 1e-8 (the checker proves it exactly).
+
+    types, if given, is a cache p -> ftypes(f, p)."""
+    split = {} if types is None else types
+
+    def ok(T):
+        cD = math.log(abs(dK)) - 3 * (EULER + math.log(8 * math.pi)) - r1 * math.pi / 2
+        cN = 3 * math.pi ** 2 / 2 + r1 * 4 * CATALAN
+        lT, SA, SB = math.log(T), 0.0, 0.0
+        for p in A.primes(2, T):
+            if p not in split:
+                split[p] = ftypes(f, p)
+            lp = math.log(p)
+            for fp in split[p][1]:
+                lN = fp * lp
+                if lN >= lT:
+                    continue
+                q = 1 / math.sqrt(p ** fp)
+                M = math.ceil(lT / lN) - 1
+                a_ = lN * q
+                b_ = lN * a_
+                if M > 1:
+                    i1 = 1 / (1 - q)
+                    a_ *= (1 - q ** M) * i1
+                    b_ *= (1 - q ** M * (M + 1 - M * q)) * i1 * i1
+                SA += a_
+                SB += b_
+        return cD + (cN + 2 * SB) / lT - 2 * SA < -1e-8
+
+    lo, hi = 1, 16
+    while not ok(hi):
+        lo, hi = hi, 2 * hi
+        if hi > 2 * Tmax:
+            raise RuntimeError('BDF bound > Tmax')
+    while hi - lo > 1:
+        t = (lo + hi) // 2
+        if ok(t):
+            hi = t
+        else:
+            lo = t
+    return hi
+
+
+def field_data(P, a):
+    """Return (the field.json record, the small labels) of the curve a with bad primes P."""
+    mm, _ = check_bad_primes(a, P)
+    b2, b4, b6, _ = cv.binv(mm)
+    if cv.int_roots([16 * b6, 8 * b4, b2, 1]):
+        raise NotApplicable(NOT_APPLICABLE)
+    f, _ = field_of(mm, [2, 3] + P)
+    dK = disc((f[3], f[2], f[1], f[0]))
+    roots = A.real_roots_floor(f, 128)
+    bach = math.floor(12 * math.log(abs(dK)) ** 2)
+    types = {}
+
+    def ft(p):
+        if p not in types:
+            types[p] = ftypes(f, p)
+        return types[p]
+    GB = bdf(f, dK, len(roots), bach, types)
+    lsize, skew = size((f[3], f[2], f[1], f[0]))
+    D = cv.cinv(mm)[2]
+    bk, n, tam = [], 0, {}
+    for p in P:
+        fp, kod, c = cv.localred(mm, p)
+        t = int(A.val(D, p) % 2 == 0) if fp == 1 else (len(ft(p)[1]) - 1 if fp >= 2 else 0)
+        n += t
+        bk.append({'p': str(p), 'reduction': str(fp), 'v_disc': str(A.val(D, p)), 'contribution': str(t)})
+        tam[str(p)] = c
+    small = [(p, r) for p in A.primes(2, GB) for r, _ in ft(p)[0]]
     F = {
         'format': FORMAT,
-        'minimal_model': lst(sf['ainvs']),
-        'bad_primes': [str(p) for p in bad_primes],
-        'poly': [int(c) for c in lst(sf['poly'])],
-        'dK': sf['dK'],
-        'log2_dK': float(sf['log2dK']),
-        'r1': int(sf['r1']),
-        'GB': int(sf['GB']),
-        'bach': int(sf['bach']),
+        'minimal_model': [str(x) for x in mm],
+        'bad_primes': [str(p) for p in P],
+        'poly': [int(c) for c in f],
+        'dK': str(dK),
+        'log2_dK': math.log2(abs(dK)),
+        'r1': len(roots),
+        'GB': GB,
+        'bach': bach,
         'ns': len(small),
-        'log2_size': float(sf['log2size']),
-        'log2_skew': float(sf['log2skew']),
-        'real_roots': [int(x) for x in lst(sf['real_roots'])],
-        'J': [[int(y) for y in z.split(':')] for z in lst(sf['J']) if ':k' not in z],
-        'J_large': [z for z in lst(sf['J']) if ':k' in z],
-        'ramified': ram,
-        'u': int(sf['u']),
-        'n': int(sf['n']),
-        'bk_primes': [dict(zip(('p', 'reduction', 'v_disc', 'contribution'), z.split(':'))) for z in lst(sf['bk_primes'])],
-        'w': int(sf['w']),
-        'sign_disc': int(sf['signD']),
-        'torsion': [int(x) for x in lst(sf['torsion'])],
+        'log2_size': float(lsize),
+        'log2_skew': math.log2(skew),
+        'real_roots': [(z + (1 << 127)) >> 128 for z in roots],
+        'J': [[p, p] for p in Field(f).lcp if A.val(f[3], p) % 2],
+        'J_large': [],
+        'ramified': [{'p': str(p), 'all_degree_1': all(x == 1 for x in ft(p)[1]), 'labels': [[r, e] for r, e in ft(p)[0]]}
+                     for p in sorted(set([2, 3] + P)) if dK % p == 0],
+        'u': 2 if D > 0 else 1,
+        'n': n,
+        'bk_primes': bk,
+        'w': cv.rootno(mm, P),
+        'sign_disc': 1 if D > 0 else -1,
+        'torsion': [int(x) for x in cv.torsion_group(mm)[0]],
+        'tamagawa': tam,
     }
     F['conductor'] = conductor(F)
     return F, small
 
 
 def conductor(F):
-    """Return the conductor prod p^f_p, from the field data's Brumer-Kramer primes (f_p: their 'reduction')."""
+    """Return the conductor from the field data."""
     N = 1
     for b in F['bk_primes']:
         N *= int(b['p']) ** int(b['reduction'])
@@ -440,8 +173,7 @@ def target(F, r):
 
 
 def goal(F):
-    """Return the bound on G at which the run stops: the largest G that gives the least possible S.  S >= r, S = r
-    needs w = (-1)^r, and G >= 0 gives S >= parity_bound(0, u, n, w)."""
+    """Return the largest G that gives the least possible S (S = r needs w = (-1)^r)."""
     r, u, n, w = F.get('rank_lower_bound'), F['u'], F['n'], F['w']
     best = parity_bound(0, u, n, w)
     if r is not None:
@@ -449,29 +181,34 @@ def goal(F):
     return best + 1 - u - n
 
 
-def prepare(state, ainvs, bad_primes, r=None, name=None, gp='gp', minimal_model=None):
-    """Write STATE/field.json and small.txt, once, and return the field data.  Raises ValueError if minimal_model is
-    wrong, or if r exceeds ns + u + n, the bound without relations."""
-    path = os.path.join(state, 'field.json')
-    if os.path.exists(path):
-        return load(state)
+def fingerprint(ainvs, bad_primes, r, name):
+    """Return the fingerprint of the artifact 'field'."""
+    return runtime.fingerprint(format=FORMAT, ainvs=[str(a) for a in ainvs], bad_primes=sorted(str(p) for p in bad_primes),
+                               r=r, name=name)
+
+
+def prepare(state, ainvs, bad_primes, r=None, name=None, minimal_model=None):
+    """Commit the artifact 'field' unless it is already valid; return the field data.
+
+    Raise ValueError if minimal_model is wrong or r exceeds ns + u + n."""
     name = check_name(name or os.path.basename(os.path.abspath(state)))
-    F, small = compute(ainvs, bad_primes, gp=gp)
+    fp = fingerprint(ainvs, bad_primes, r, name)
+    if runtime.load(state, 'field', FORMAT, fp) is not None:
+        return load(state)
+    F, small = compute(ainvs, bad_primes)
     if minimal_model is not None and [str(x) for x in minimal_model] != F['minimal_model']:
         raise ValueError('The minimal_model given for %s is wrong; it should be [%s]. Correct it or leave it out.' % (
             name, ','.join(F['minimal_model'])))
     if r is not None and r > F['ns'] + F['u'] + F['n']:
         raise ValueError('r = %d is impossible for this curve: under GRH its rank is at most %d. Check r.' % (
             r, F['ns'] + F['u'] + F['n']))
-    os.makedirs(state, exist_ok=True)
     F['name'] = name
     F['input_ainvs'] = [str(a) for a in ainvs]
     F['rank_lower_bound'] = r
     F['g_target'] = target(F, r)
-    with open(os.path.join(state, 'small.txt.tmp'), 'w') as f:
-        f.writelines('%d %d\n' % s for s in small)
-    os.replace(os.path.join(state, 'small.txt.tmp'), os.path.join(state, 'small.txt'))
-    write_json(path, F)
+    with runtime.transaction(state, 'field', FORMAT, fp, {'ns': F['ns']}) as tx:
+        tx.write('small.txt', ''.join('%d %d\n' % s for s in small))
+        tx.write('field.json', json.dumps(F, indent=1) + '\n')
     return F
 
 
@@ -479,22 +216,19 @@ def load(state):
     return read_json(os.path.join(state, 'field.json'))
 
 
-def write_split(poly, pmax, out, extra=(), gp='gp'):
-    """Write to out, in makefb's format, the primes p < pmax and the primes in extra at which F splits completely:
-    the free relations of a run on given relations."""
+def write_split(poly, pmax, out, extra=()):
+    """Write to out, in makefb's format, the primes below pmax or in extra where F splits completely."""
     extra = sorted({int(p) for p in extra if int(p) >= pmax})
+    f = [int(c) for c in poly]
     tmp = '%s.tmp%d.gz' % (out, os.getpid())
-    with open(tmp + '.gpv', 'w') as f:            # readvec: the list may be long
-        f.writelines('%d\n' % p for p in extra)
-    try:
-        body = 'sfsplit([%s], %d, readvec("%s"));' % (','.join(str(int(c)) for c in poly), int(pmax), tmp + '.gpv')
-        out_txt = run_gp(body, libs=(os.path.join(HERE, 'field.gp'),), seconds=7200, gp=gp)
-    finally:
-        os.remove(tmp + '.gpv')
-    with gzip.open(tmp, 'wt') as f:
-        f.write('# primes below %d (and %d larger ones) where F splits completely (rankbound, field.gp sfsplit)\n' % (
+    with gzip.open(tmp, 'wt') as fo:
+        fo.write('# primes below %d (and %d larger ones) where F splits completely (rankbound, field.write_split)\n' % (
             pmax, len(extra)))
-        f.write(out_txt)
+        for p in A.primes(2, pmax) + extra:
+            if any(c % p for c in f):
+                rs = roots_p1(f, p)
+                if len(rs) == 3:
+                    fo.write('%d: %s\n' % (p, ','.join(str(r) for r, _ in rs)))
     os.replace(tmp, out)
     return out
 
@@ -504,12 +238,379 @@ def load_small(state):
         return [tuple(map(int, l.split())) for l in f]
 
 
-def shifted(poly, k):
-    """Return the coefficients c0..c3 of F(x + k, 1)."""
-    c0, c1, c2, c3 = poly
-    return [c0 + c1 * k + c2 * k * k + c3 * k ** 3, c1 + 2 * c2 * k + 3 * c3 * k * k, c2 + 3 * c3 * k, c3]
-
-
 def norm(poly, a, b):
     c0, c1, c2, c3 = poly
     return ((c3 * a + c2 * b) * a + c1 * b * b) * a + c0 * b ** 3
+
+
+# ========== cubic fields
+# K = Q(alpha), f = F(x, 1) = [c0, c1, c2, c3] the index form, O_K = <1, c3 alpha, c3 alpha^2 + c2 alpha>.  Elements
+# are 3-tuples on 1, alpha, alpha^2 ("power" coordinates) or on that basis ("O" coordinates).
+
+# ---------- Q[x]/(g), g a cubic
+
+def pmul(g, x, y):
+    """Return x y in Q[x]/(g), g = [g0, g1, g2, g3]."""
+    z = [0] * 5
+    for i in range(3):
+        for j in range(3):
+            z[i + j] += x[i] * y[j]
+    for k in (4, 3):
+        c = Fraction(z[k]) / g[3]
+        for i in range(4):
+            z[k - 3 + i] -= c * g[i]
+    return tuple(z[:3])
+
+
+def pinv(g, x):
+    """Return 1/x in Q[x]/(g)."""
+    cols = [pmul(g, x, e) for e in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+    return A.solve3([[cols[j][i] for j in range(3)] for i in range(3)], (1, 0, 0))
+
+
+# ---------- the maximal order
+
+def _apply(F, M):
+    """Return F(m11 x + m12 y, m21 x + m22 y), F = (a, b, c, d) from x^3 to y^3."""
+    (m11, m12), (m21, m22) = M
+    X, Y = [m12, m11], [m22, m21]               # x and y in t = X/Y, low degree first
+    out = [0, 0, 0, 0]
+    for k, c in enumerate(F):
+        p = [1]
+        for _ in range(3 - k):
+            p = _pm(p, X)
+        for _ in range(k):
+            p = _pm(p, Y)
+        for i, v in enumerate(p):
+            out[i] += c * v
+    return tuple(out[::-1])
+
+
+def _pm(p, q):
+    r = [0] * (len(p) + len(q) - 1)
+    for i, a in enumerate(p):
+        for j, b in enumerate(q):
+            r[i + j] += a * b
+    return r
+
+
+def disc(F):
+    a, b, c, d = F
+    return b * b * c * c - 4 * a * c ** 3 - 4 * b ** 3 * d - 27 * a * a * d * d + 18 * a * b * c * d
+
+
+def multiple_root(F, p):
+    """Return (r, multiplicity) of a multiple root of F mod p, or None."""
+    f = [F[3], F[2], F[1], F[0]]
+    for r, m in roots_p1(f, p):
+        if m > 1:
+            return r, m
+    return None
+
+
+def roots_p1(f, p):
+    """Return [(r, multiplicity)] of the zeros in P^1(F_p) of the form with F(x, 1) = f; r = p is (1:0), last."""
+    g = A.pmod(f, p)
+    out = []
+    for r in A.roots_mod(g, p):
+        m, h = 0, g
+        while len(h) > 1 and A.peval(h, r, p) == 0:
+            h = A.pdivmod(h, [-r, 1], p)[0]
+            m += 1
+        out.append((r, m))
+    if len(g) < 4:
+        out.append((p, 4 - len(g)))
+    return out
+
+
+def maximal_form(T, primes):
+    """Return (an index form F of O_K for K = Q[x]/(T), a root of F(x, 1)); primes must hold every p^2 | disc(T).
+
+    An overring of index p exists iff a multiple root of F mod p at (1:0) gives p^2 | a [Belabas 1997]."""
+    F = (T[3], T[2], T[1], T[0])
+    rho = (0, 1, 0)
+    for p in sorted(set(primes)):
+        while disc(F) % (p * p) == 0:
+            if all(c % p == 0 for c in F):
+                F = tuple(c // p for c in F)
+                continue
+            mr = multiple_root(F, p)
+            if mr is None:
+                break
+            r = mr[0]
+            if r != p:                          # (r:1) to (1:0): F(r x + y, x), rho -> 1/(rho - r)
+                F = _apply(F, ((r, 1), (1, 0)))
+                rho = pinv(T, (rho[0] - r, rho[1], rho[2]))
+            if F[0] % (p * p):
+                break
+            F = (F[0] // (p * p), F[1] // p, F[2], F[3] * p)
+            rho = tuple(p * c for c in rho)
+    return F, rho
+
+
+# ---------- GL2(Z)-reduction
+
+def _croots(F, prec=60):
+    """Return the roots of F(x, 1) as (re, im) Decimals."""
+    rr, cc = A.roots([F[3], F[2], F[1], F[0]], prec)
+    return [(z, Decimal(0)) for z in rr] + [(re, s * im) for re, im in cc for s in (1, -1)]
+
+
+def reduce_form(F):
+    """Return (G, M) with G = F o M reduced, the smaller of the two weightings."""
+    with localcontext() as ctx:
+        ctx.prec = 60 + 2 * max(len(str(abs(c))) for c in F)         # keeps the Gram matrix positive definite
+        th = _croots(F, ctx.prec)
+        a, b, c, d = F
+        def dF(z):                              # |F'(z, 1)|^2
+            re, im = z
+            r2, i2 = re * re - im * im, 2 * re * im
+            return (3 * a * r2 + 2 * b * re + c) ** 2 + (3 * a * i2 + 2 * b * im) ** 2
+        cands = []
+        for w in ([Decimal(1)] * 3, [dF(z) ** (Decimal(-1) / 3) for z in th]):
+            G = [[sum(w), -sum(wi * z[0] for wi, z in zip(w, th))], [0, sum(wi * (z[0] ** 2 + z[1] ** 2) for wi, z in zip(w, th))]]
+            G[1][0] = G[0][1]
+            U = A.lll_gram([[Fraction(x) for x in r] for r in G], eta=Fraction(51, 100))
+            M = ((U[0][0], U[0][1]), (U[1][0], U[1][1]))
+            H = _apply(F, M)
+            if H[0] < 0:                        # F o (-M) = -(F o M)
+                H, M = tuple(-x for x in H), tuple(tuple(-x for x in r) for r in M)
+            cands.append((H, M))
+    return cands[0] if size(cands[0][0])[0] <= size(cands[1][0])[0] else cands[1]
+
+
+def size(F):
+    """Return (log2 of the skewed size, the skew) of F."""
+    cs = [F[3], F[2], F[1], F[0]]
+    l = [math.log2(abs(c)) if c else None for c in cs]
+    g = lambda t: max(l[i] + (i - 1.5) * t for i in range(4) if l[i] is not None)
+    gb, t0 = math.inf, 0.0
+    for i in range(4):
+        for j in range(i + 1, 4):
+            if l[i] is not None and l[j] is not None:
+                t = (l[i] - l[j]) / (j - i)
+                v = g(t)
+                if v < gb:
+                    gb, t0 = v, t
+    # g is convex: the best grid point is next to t0
+    best, sk = math.inf, 1.0
+    t0 = min(100.0, max(-100.0, t0))
+    for k in range(max(-400, math.floor(4 * t0) - 6), min(400, math.ceil(4 * t0) + 6) + 1):
+        m = g(k / 4)
+        if m < best:
+            best, sk = m, 2.0 ** (k / 4)
+    return best, sk
+
+
+# ---------- the field K = Q(alpha) and its primes
+
+def label_text(z):
+    """Return the prime label z as 'p:r' (degree 1) or 'p:kK:fF'; their order fixes the witness's lists."""
+    return '%d:%d' % z if len(z) == 2 else '%d:k%d:f%d' % z
+
+
+class Prime:
+    """A prime P of K above p: label, phi (O_K -> F_p[t]/(g)), hnf, and tau not in p O_K with tau P in p O_K."""
+    def __init__(self, K, p, e, f, r, g, k):
+        self.p, self.e, self.f, self.r, self.g = p, e, f, r, g
+        self.label = (p, r) if f == 1 else (p, k, f)
+        a, b, c = K.F[0], K.F[1], K.F[2]
+        if f == 1:
+            self.phi = [[1], [a * r % p], [(a * r * r + b * r) % p]] if r < p else [[1], [-b % p], [-c % p]]
+        else:
+            self.phi = [[1], A.pmod([0, a], p), A.pdivmod(A.pmod([0, b, a], p), g, p)[1]]
+        self.q = p ** f
+        # P = ker(O_K -> F_q), which contains p O_K
+        rows = [[p if i == j else 0 for j in range(3)] for i in range(3)]
+        cols = [self.phi[i] + [0] * (f - len(self.phi[i])) for i in range(3)]
+        for v in A._kernel_modp([[cols[i][j] for i in range(3)] for j in range(f)], 3, p):
+            rows.append(v)
+        self.hnf = A.hnf(rows)
+        # tau h in p O_K for each basis element h of P
+        eqs = []
+        for h in self.hnf:
+            Mh = K.omat(h)
+            eqs += [[Mh[r][i] for i in range(3)] for r in range(3)]
+        tau = A._kernel_modp(eqs, 3, p)
+        self.tau = next(v for v in tau if any(x % p for x in v))
+
+    def red(self, x):
+        """Return the image in F_q of x in O_K."""
+        z = [0] * self.f
+        for xi, ph in zip(x, self.phi):
+            for j, c in enumerate(ph):
+                z[j] += xi * c
+        return A.pmod(z, self.p)
+
+
+def lat_reduce(x, H):
+    """Return the canonical residue of x modulo the HNF lattice H."""
+    x = list(x)
+    for i in range(3):
+        q = x[i] // H[i][i]
+        x = [a - q * b for a, b in zip(x, H[i])]
+    return tuple(x)
+
+
+class Field:
+    """K = Q(alpha), alpha a root of the index form f."""
+
+    def __init__(self, f):
+        self.f = [int(c) for c in f]
+        c0, c1, c2, c3 = self.f
+        self.F = (c3, c2, c1, c0)               # (a, b, c, d)
+        if not c3:
+            raise ValueError('not a cubic form: its x^3 coefficient is 0')
+        B = [(1, 0, 0), (0, c3, 0), (0, c2, c3)]        # the basis of O_K
+        self.B = B
+        # w1 = a alpha, w2 = a alpha^2 + b alpha:
+        #   w1^2 = -b w1 + a w2,   w1 w2 = -a d - c w1,   w2^2 = -b d - d w1 - c w2
+        a, b, c, d = self.F
+        self.T = [[(1, 0, 0), (0, 1, 0), (0, 0, 1)],
+                  [(0, 1, 0), (0, -b, a), (-a * d, -c, 0)],
+                  [(0, 0, 1), (-a * d, -c, 0), (-b * d, -d, -c)]]
+        self.dec_cache, self.pcache = {}, {}
+
+    @functools.cached_property
+    def lcp(self):
+        """Return the prime divisors of c3 (lazily: factoring may be costly)."""
+        c3 = self.f[3]
+        return A.prime_divisors(abs(c3)) if abs(c3) > 1 else []
+
+    def ocoords(self, x):
+        """Return the O coordinates of x from its power coordinates."""
+        c0, c1, c2, c3 = self.f
+        n3 = Fraction(x[2]) / c3
+        n2 = (Fraction(x[1]) - n3 * c2) / c3
+        out = (Fraction(x[0]), n2, n3)
+        return tuple(int(v) if v.denominator == 1 else v for v in out)
+
+    def power(self, n):
+        """Return the power coordinates of n from its O coordinates."""
+        return (n[0], n[1] * self.f[3] + n[2] * self.f[2], n[2] * self.f[3])
+
+    def omul(self, x, y):
+        z = [0, 0, 0]
+        for i in range(3):
+            if x[i]:
+                for j in range(3):
+                    if y[j]:
+                        c = x[i] * y[j]
+                        t = self.T[i][j]
+                        z[0] += c * t[0]; z[1] += c * t[1]; z[2] += c * t[2]
+        return tuple(z)
+
+    def omat(self, x):
+        """Return the matrix of multiplication by x; column j is x b_j."""
+        u, v, w = x
+        a, b, c, d = self.F
+        return [[u, -a * d * w, -a * d * v - b * d * w],
+                [v, u - b * v - c * w, -c * v - d * w],
+                [w, a * v, u - c * w]]
+
+    def norm(self, x):
+        """Return N(x) = det omat(x) for x in O coordinates."""
+        (a, b, c), (d, e, f), (g, h, i) = self.omat(x)
+        return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+
+    def integral(self, x):
+        """Return (y, d), y in O_K and d > 0 least with x = y / d."""
+        n = self.ocoords(x)
+        d = 1
+        for v in n:
+            if isinstance(v, Fraction):
+                d = d * v.denominator // math.gcd(d, v.denominator)
+        return tuple(int(v * d) for v in n), d
+
+    def dec(self, p):
+        """Return the primes above p, degree 1 first (in the order of roots_p1)."""
+        if p not in self.dec_cache:
+            pts = roots_p1(self.f, p)
+            out = [Prime(self, p, m, 1, r, None, 0) for r, m in pts]
+            rest = 3 - sum(m for _, m in pts)
+            if rest:
+                g = A.pmod(self.f, p)
+                for r, m in pts:
+                    if r < p:
+                        for _ in range(m):
+                            g = A.pdivmod(g, [-r, 1], p)[0]
+                inv = pow(g[-1], -1, p)
+                g = [c * inv % p for c in g]
+                out.append(Prime(self, p, 1, rest, None, g, 2 if pts else 1))
+            self.dec_cache[p] = out
+        return self.dec_cache[p]
+
+    def prime(self, p, label):
+        """Return the prime above p with this label.
+
+        For an unramified degree-1 label prime to lc(F), only (p, q, label, tau) with tau = (f(x) / (x - r))(alpha),
+        which vanishes at the other primes above p only."""
+        if (p, label) not in self.pcache:
+            c0, c1, c2, c3 = self.f
+            if p not in self.dec_cache and len(label) == 2 and disc(self.F) % p and c3 % p:
+                r = label[1]
+                tau = ((c1 + c2 * r + c3 * r * r) % p, r, 1)
+                self.pcache[p, label] = SimpleNamespace(p=p, q=p, label=label, tau=tau)
+            else:
+                self.pcache[p, label] = next(P for P in self.dec(p) if P.label == label)
+        return self.pcache[p, label]
+
+    def val_int(self, x, P):
+        """Return (v_P(x), x tau^v / p^v) for x != 0 in O_K."""
+        v, p = 0, P.p
+        while True:
+            y = self.omul(x, P.tau)
+            if any(c % p for c in y):
+                return v, x
+            x, v = tuple(c // p for c in y), v + 1
+
+    def val(self, x, P):
+        """Return v_P(x) for x != 0 in power coordinates."""
+        y, d = self.integral(x)
+        return self.val_int(y, P)[0] - P.e * A.val(d, P.p)
+
+
+_FIELDS = {}
+
+
+def field_of(ainvs, primes):
+    """Return (the reduced index form of the field of W, a root of W), W the 2-division cubic; as maximal_form."""
+    key = tuple(ainvs)
+    if key not in _FIELDS:
+        _FIELDS.clear()
+        _FIELDS[key] = _field_of(ainvs, primes)
+    return _FIELDS[key]
+
+
+def _field_of(ainvs, primes):
+    from .curve import binv
+    b2, b4, b6, _ = binv(ainvs)
+    T = [16 * b6, 8 * b4, b2, 1]
+    F, rho = maximal_form(T, primes)
+    G, M = reduce_form(F)
+    (m11, m12), (m21, m22) = M
+    alpha = pmul(T, (m22 * rho[0] - m12, m22 * rho[1], m22 * rho[2]), pinv(T, (m11 - m21 * rho[0], -m21 * rho[1], -m21 * rho[2])))
+    a2 = pmul(T, alpha, alpha)
+    theta = A.solve3([[1, alpha[0], a2[0]], [0, alpha[1], a2[1]], [0, alpha[2], a2[2]]], (0, 1, 0))
+    return [G[3], G[2], G[1], G[0]], theta
+
+
+_FORM = {}
+
+
+def form_field(f):
+    """Return the Field of f, cached so that callers share its prime decompositions."""
+    key = tuple(int(c) for c in f)
+    if key not in _FORM:
+        _FORM.clear()
+        _FORM[key] = Field(key)
+    return _FORM[key]
+
+
+def relation_el(r):
+    """Return the element of the relation r ([0, a, b], [1, c0, c1, c2, d] or [2, p])."""
+    if r[0] == 0:
+        return (r[1], -r[2], 0)
+    if r[0] == 1:
+        return tuple(Fraction(c, r[4]) for c in r[1:4])
+    return (r[1], 0, 0)

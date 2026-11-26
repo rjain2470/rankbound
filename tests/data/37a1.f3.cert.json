@@ -1,0 +1,71 @@
+{
+ "name": "0_0_1_-1_0",
+ "curve": {
+  "ainvs": [
+   "0",
+   "0",
+   "1",
+   "-1",
+   "0"
+  ],
+  "minimal_model": [
+   "0",
+   "0",
+   "1",
+   "-1",
+   "0"
+  ],
+  "bad_primes": [
+   "37"
+  ]
+ },
+ "statement": "Assuming the GRH, we have that rank E(Q) <= 1. As E(Q) has 1 independent rational point, we therefore have rank E(Q) = 1.",
+ "torsion": [],
+ "GRH": "yes",
+ "rank_lower_bound": {
+  "r": 1,
+  "points": [
+   [
+    "0",
+    "0"
+   ]
+  ],
+  "primes": [
+   17
+  ]
+ },
+ "field": {
+  "poly": [
+   "-1",
+   "-3",
+   "1",
+   "1"
+  ],
+  "dK": "148",
+  "GB": 9,
+  "ns": 2
+ },
+ "local": {
+  "u": 2,
+  "n": 0,
+  "w": -1
+ },
+ "claims": {
+  "G": 0,
+  "dimV": 2,
+  "S": 1
+ },
+ "created": "2026-11-15",
+ "relations": [
+  "f:2",
+  "-3,1:2,5"
+ ],
+ "ops": [
+
+ ],
+ "pivots": [
+  0,
+  1
+ ],
+ "format": "rankbound-selmer-certificate-3"
+}

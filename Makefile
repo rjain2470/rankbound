@@ -1,36 +1,57 @@
-.PHONY: build test test-fast cado clean
+.PHONY: build build-strict test test-fast test-asan build-asan asan-tests lint typecheck trusted clean
 JOBS ?= 3
-CADO = rankbound/cado
+PYTHON ?= python3
+CFLAGS ?= $(OPT)
+WERROR ?=
+include rankbound/native.mk
+# the tests' runs on one core each, unless a test gives more (RANKBOUND_CORES: the default of --cores)
+TESTENV = PYTHONDONTWRITEBYTECODE=1 RANKBOUND_CORES=1
+TEST = $(TESTENV) $(PYTHON) -m unittest
 
-# the prover's F_2 elimination and the verifier's dense rank (independent of each other)
-build: rankbound/f2elim rankbound/verify/f2rank
-rankbound/f2elim: rankbound/f2elim.c
-	cc -O3 -pthread -o $@ $<
-rankbound/verify/f2rank: rankbound/verify/f2rank.c
-	cc -O3 -pthread -o $@ $<
+# the prover's F_2 elimination, its kernel vectors (f2kernel) and siever; the checker's program, check rel and check rank (independent of the prover)
+build: $(PROGRAMS)
+$(PROGRAMS): %: %.c
+	$(CC) $(CFLAGS) $(WARN) $(WERROR) $(THREADS) -o $@ $< $(LIBS)
 
-# unit, reference (against PARI) and end-to-end tests; needs gp; ~3 min
-test: build
-	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+# the same, rebuilt with warnings as errors (make test, CI); make build does not, as another compiler may warn
+build-strict:
+	$(MAKE) -B build WERROR="$(STRICT)"
 
-# the same without the las run of ICARM #1 (TestLas, ~1 min)
+# unit, reference (against PARI) and end-to-end tests, the modules in JOBS parallel shards (tests/shards.py); needs
+# gp; about 4 min with JOBS=3 on a laptop (RANKBOUND_TEST_FULL=1: every case)
+test: build-strict
+	$(TESTENV) $(PYTHON) tests/shards.py --jobs $(JOBS)
+
+# the same with fewer of the checker's random cases (RANKBOUND_TEST_FAST)
 test-fast: build
-	RANKBOUND_TEST_FAST=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+	RANKBOUND_TEST_FAST=1 $(TESTENV) $(PYTHON) tests/shards.py --jobs $(JOBS)
 
-# CADO-NFS las and makefb into rankbound/cado/, with VERSION (tarball and sha256): make cado CADO_TARBALL=...
-# Needs cmake >= 3.18, GMP (GMP=<prefix> if not on the default paths) and C++20 (macOS clang: CXXFLAGS="-std=c++20
-# -fexperimental-library").  flask and requests get empty stand-ins for cmake.  CADO uses the build CPU's newest
-# instructions, so build on the oldest CPU it will run on.
-cado:
-	@test -n "$(CADO_TARBALL)" || { echo 'usage: make cado CADO_TARBALL=cado-nfs.tar.gz'; exit 1; }
-	rm -rf build/cado-src build/cado-build && mkdir -p build/cado-src build/cado-stub $(CADO)
-	tar -xzf $(CADO_TARBALL) -C build/cado-src --strip-components 1
-	for m in flask requests; do python3 -c "import $$m" 2>/dev/null || : > build/cado-stub/$$m.py; done
-	PYTHONPATH=$(CURDIR)/build/cado-stub cmake -S build/cado-src -B build/cado-build -DCMAKE_BUILD_TYPE=Release > $(CADO)/cmake.log 2>&1
-	$(MAKE) -C build/cado-build -j $(JOBS) las makefb > $(CADO)/make.log 2>&1
-	cp build/cado-build/sieve/las build/cado-build/sieve/makefb $(CADO)/
-	printf 'cado-nfs %s sha256 %s built %s\n' "$$(basename $(CADO_TARBALL))" \
-	  "$$( (shasum -a 256 $(CADO_TARBALL) 2>/dev/null || sha256sum $(CADO_TARBALL)) | cut -d' ' -f1)" "$$(date +%F)" | tee $(CADO)/VERSION
+# the C programs under AddressSanitizer and UBSan, through every test module that runs one (all but the pure-Python
+# ones, ASAN_SKIP), then rebuilt as by make build.
+SAN = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all
+SANENV = ASAN_OPTIONS=detect_leaks=0:exitcode=99 UBSAN_OPTIONS=print_stacktrace=1 PYTHONPATH=tests:.
+ASAN_SKIP = test_check_imports test_math_regressions test_math_speedups test_witness_stream test_check_form
+ASAN_TESTS = $(filter-out $(ASAN_SKIP),$(basename $(notdir $(wildcard tests/test_*.py))))
+test-asan:
+	$(MAKE) -B build CFLAGS="$(SAN)"
+	$(SANENV) $(TEST) $(ASAN_TESTS); s=$$?; rm -rf $(PROGRAMS:=.dSYM); $(MAKE) -B build; exit $$s
+
+build-asan:
+	$(MAKE) -B build CFLAGS="$(SAN)"
+
+asan-tests:
+	@echo $(ASAN_TESTS)
+
+# lint: ruff with pyproject.toml's rules (pip install ruff)
+lint:
+	ruff check .
+
+typecheck:
+	mypy                # pyproject.toml's [tool.mypy] files
+
+# the trusted base of a PASS (docs/verification.md): the lines of the checker's sources, which its hash covers
+trusted:
+	@cd rankbound/check && wc -l *.py *.gp *.c
 
 clean:
-	rm -rf rankbound/f2elim rankbound/verify/f2rank build $$(find . -name __pycache__)
+	rm -rf $(PROGRAMS) build $$(find . -name __pycache__)

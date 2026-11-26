@@ -3,8 +3,10 @@ __pycache__/
 build/
 logs/
 rankbound_work/
+.venv/
 rankbound/f2elim
-rankbound/cado/
-rankbound/verify/f2rank
-certificates/
+rankbound/f2kernel
+witnesses/
 .DS_Store
+rankbound/sieve
+rankbound/check/check

@@ -1,13 +1,13 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rankbound"
-version = "2.0.0"
-description = "Upper bounds on the rank of elliptic curves over Q under GRH for the unramified quadratic extensions of a cubic field (no BSD), with independently checkable certificates"
+version = "3.0.0"
+description = "Upper bounds on the rank of elliptic curves over Q, with witnesses that an independent checker verifies"
 readme = "README.md"
-license = {text = "GPL-2.0-or-later"}
+license = "GPL-2.0-or-later"
 authors = [{name = "Ritik Jain"}]
 requires-python = ">=3.9"
 dependencies = []
@@ -19,8 +19,29 @@ Repository = "https://github.com/rjain2470/rankbound"
 rankbound = "rankbound.__main__:main"
 
 [tool.setuptools]
-packages = ["rankbound", "rankbound.verify"]
+packages = ["rankbound", "rankbound.check"]
 
 [tool.setuptools.package-data]
-"rankbound" = ["field.gp", "f2elim.c", "f2elim"]
-"rankbound.verify" = ["verify.gp", "two_descent.gp", "f2rank.c", "f2rank"]
+"rankbound" = ["f2elim.c", "f2kernel.c", "sieve.c", "native.mk"]
+"rankbound.check" = ["check.gp", "check.c"]
+
+# The one lint configuration (ruff): `make lint` (ruff pinned in CI).  Only the rules that
+# catch real errors: syntax errors, undefined names, invalid comparisons, misuse of assert/raise, and dead code.
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+# line length and style are not checked: the sources keep their own layout
+select = ["E9", "F63", "F7", "F82", "F401", "F841"]
+
+
+# The type check of the public boundaries (the API, the request and result records, the witness codec, the checker's
+# entry points): `make typecheck`, and CI.
+[tool.mypy]
+files = ["rankbound/__init__.py", "rankbound/core.py", "rankbound/machine.py", "rankbound/witness.py",
+         "rankbound/check/__init__.py"]
+python_version = "3.10"
+ignore_missing_imports = true
+follow_imports = "silent"

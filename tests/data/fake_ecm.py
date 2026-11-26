@@ -1,4 +1,4 @@
-"""A stand-in for GMP-ECM in tests (test_factor.py): `fake_ecm.py -q -one -maxmem M (-c K B1 | -pm1 B1)`, the number
+"""A stand-in for GMP-ECM in tests (test_curve.py): `fake_ecm.py -q -one -maxmem M (-c K B1 | -pm1 B1)`, the number
 on stdin.  It finds the prime p of FAKE_ECM_FIND="p:B1,..." (or "p:B1-B1max") when B1 >= that B1 (and <= B1max, and p
 divides the number), else runs
 K curves of FAKE_ECM_SPC seconds each and finds nothing; FAKE_ECM_FAIL=1 exits 1; FAKE_ECM_WHOLE=1 finds the input

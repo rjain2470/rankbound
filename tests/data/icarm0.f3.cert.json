@@ -1,0 +1,70 @@
+{
+ "name": "icarm0",
+ "curve": {
+  "ainvs": [
+   "0",
+   "-1",
+   "1",
+   "0",
+   "0"
+  ],
+  "minimal_model": [
+   "0",
+   "-1",
+   "1",
+   "0",
+   "0"
+  ],
+  "bad_primes": [
+   "11"
+  ]
+ },
+ "statement": "Assuming the GRH, we have that rank E(Q) <= 0.",
+ "torsion": [
+  5
+ ],
+ "GRH": "yes",
+ "rank_lower_bound": {
+  "r": 0,
+  "points": [],
+  "primes": []
+ },
+ "field": {
+  "poly": [
+   "1",
+   "1",
+   "-1",
+   "1"
+  ],
+  "dK": "-44",
+  "GB": 7,
+  "ns": 1
+ },
+ "local": {
+  "u": 1,
+  "n": 0,
+  "w": 1
+ },
+ "claims": {
+  "G": 0,
+  "dimV": 1,
+  "S": 0
+ },
+ "created": "2026-11-15",
+ "relations": [
+  "f:199",
+  "f:2",
+  "-7,1:2,c7",
+  "7,5:2,c7"
+ ],
+ "ops": [
+
+ ],
+ "pivots": [
+  0,
+  1,
+  2,
+  3
+ ],
+ "format": "rankbound-selmer-certificate-3"
+}
